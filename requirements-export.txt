@@ -1,0 +1,4 @@
+# Лише для scripts/export_models.py (експорт MTCNN і MobileFaceNet в ONNX, INT8-квантування).
+# Прототипу PyTorch не потрібен. Встановлювати разом з requirements.txt в окреме середовище:
+#   pip install -r requirements.txt -r requirements-export.txt --extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.2

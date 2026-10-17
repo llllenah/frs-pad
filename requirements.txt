@@ -1,0 +1,18 @@
+# Python 3.10–3.12 (MediaPipe 0.10.21 – остання версія з mp.solutions.hands і face_mesh)
+mediapipe==0.10.21
+opencv-contrib-python>=4.8,<4.12
+numpy>=1.24,<2
+onnxruntime>=1.17
+onnx>=1.15,<1.18      # новіші версії потребують protobuf 6+, несумісного з MediaPipe 0.10.21
+protobuf>=4.25.3,<5
+scikit-learn>=1.4
+scipy>=1.10
+matplotlib>=3.7
+pillow>=10
+pyyaml>=6
+cryptography>=42    # AES-256-GCM для записів набору даних (FR-65)
+fastapi>=0.110      # веб-інтерфейс: REST і WebSocket (scripts/serve.py)
+uvicorn>=0.29
+websockets>=12      # підтримка WebSocket в uvicorn
+httpx>=0.27         # TestClient у тестах API
+pytest>=8

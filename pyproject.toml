@@ -1,0 +1,14 @@
+[project]
+name = "frs-pad"
+version = "0.1.0"
+description = "Модуль виявлення атак підміни обличчя на основі активних викликів (прототип курсової роботи)"
+requires-python = ">=3.10,<3.13"
+
+[tool.setuptools]
+packages = ["pad"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+# starlette.testclient радить httpx2 замість httpx; на роботу тестів це не впливає
+filterwarnings = ["ignore:Using .httpx. with .starlette.testclient."]

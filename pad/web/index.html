@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FRS PAD</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo"></span><span class="name">FRS Platform</span></div>
+  <nav>
+    <a class="off" title="Конвеєр розпізнавання – поза межами курсової роботи">Дашборд</a>
+    <a class="off" title="Конвеєр розпізнавання – поза межами курсової роботи">Моніторинг</a>
+    <a href="#/verify" data-view="verify">Верифікація</a>
+    <a class="off" title="Конвеєр розпізнавання – поза межами курсової роботи">База осіб</a>
+    <a href="#/record" data-view="record">Дослідження</a>
+    <a class="off" title="Поза межами курсової роботи">Налаштування</a>
+  </nav>
+  <div class="live" id="live">● OFFLINE</div>
+  <div class="avatar"></div>
+</header>
+
+<!-- Рисунок 4.7 – Екранна форма сеансу верифікації з активними викликами -->
+<main id="view-verify" class="view verify">
+  <aside class="side">
+    <h3 class="cap">Сеанс верифікації</h3>
+    <div class="card">
+      <div class="cap small">Заявлена особа</div>
+      <input id="v-person" class="person-name" list="persons" value="P01" spellcheck="false" autocomplete="off"
+             title="Псевдонім заявленої особи">
+      <div class="muted" id="v-person-info">еталон: –</div>
+      <div class="row">
+        <button id="v-enroll" class="btn sm" title="Еталон за 30 кадрами з камери">Зареєструвати еталон</button>
+        <label class="btn sm file-btn" title="Еталон з фотографії (наприклад, цільового обличчя)">З фото
+          <input id="v-photo" type="file" accept="image/jpeg,image/png"></label>
+      </div>
+      <div class="cap small">Сеанс</div>
+      <div class="mono" id="v-code">–</div>
+      <div class="muted" id="v-state">сеанс не розпочато</div>
+    </div>
+
+    <h3 class="cap">Виклики (випадкові)</h3>
+    <div class="attempt" id="v-attempt" hidden></div>
+    <ol class="challenges" id="v-challenges"><li class="empty">з'являться після фіксації еталона</li></ol>
+
+    <h3 class="cap">Перевірка виконання</h3>
+    <dl class="kv" id="v-check">
+      <dt>Face Mesh</dt><dd id="c-face">–</dd>
+      <dt>Hands</dt><dd id="c-hand">–</dd>
+      <dt>Yaw / Pitch</dt><dd id="c-pose">–</dd>
+      <dt>Детекція обличчя</dt><dd id="c-det">–</dd>
+    </dl>
+    <div class="note">Прототип інтерфейсу · курсова робота</div>
+  </aside>
+
+  <section class="center">
+    <div class="videobar">
+      <span id="v-cam">● камеру не ввімкнено</span>
+      <select class="source-select" title="Джерело відео"></select>
+      <span class="spacer"></span>
+      <span class="mono" id="v-fps">FPS – · – мс</span>
+    </div>
+    <div class="stage" id="v-stage">
+      <canvas class="frame" id="v-canvas"></canvas>
+      <div class="instr" id="v-instr">
+        <b id="v-instr-title">Сеанс не розпочато</b>
+        <span id="v-instr-sub">Увімкніть камеру, вкажіть заявлену особу і натисніть «Почати сеанс»</span>
+        <div class="bar"><i id="v-progress"></i></div>
+      </div>
+      <div class="timer" id="v-timer" hidden>
+        <svg viewBox="0 0 78 78"><circle cx="39" cy="39" r="34"></circle>
+          <circle class="fg" id="v-ring" cx="39" cy="39" r="34" stroke-dasharray="213.6" stroke-dashoffset="0"></circle></svg>
+        <span id="v-remaining">–</span>
+      </div>
+      <div class="chip" id="v-chip" hidden></div>
+      <div class="placeholder" id="v-placeholder">
+        <div>Відео з вебкамери обробляється на сервері: детекція, ключові точки, ембединг.</div>
+        <div class="row">
+          <button class="btn cam-on">Увімкнути камеру</button>
+          <label class="btn file-btn">Відеофайл<input class="video-file" type="file" accept="video/*"></label>
+        </div>
+      </div>
+    </div>
+    <div class="chart">
+      <div class="charthead">
+        <b>Косинусна подібність ембединга до еталона</b>
+        <span class="legend"><span><i></i>s_ref(t) – еталон сеансу</span><span><i class="dash"></i>s_enr(t) – еталон з бази</span></span>
+      </div>
+      <canvas id="v-chart"></canvas>
+    </div>
+  </section>
+
+  <aside class="right">
+    <h3 class="cap">Рішення модуля виявлення атак</h3>
+    <div class="decision idle" id="v-decision">
+      <small id="d-caption">Рішення формується після останнього виклику</small>
+      <strong id="d-title">ОЧІКУВАННЯ СЕАНСУ</strong>
+      <div class="sub">оцінка атаки <b id="d-score">–</b> · поріг <b id="d-threshold">–</b></div>
+      <div class="bar"><i id="d-bar"></i></div>
+      <div class="lat" id="d-lat"></div>
+    </div>
+    <div class="card">
+      <h4>Ознаки дрейфу ідентичності</h4>
+      <dl class="kv" id="v-features"></dl>
+      <div class="muted" id="v-features-src" style="font-size:13px;margin-top:8px">ознаки обчислюються після кожного виконаного виклику</div>
+      <details><summary>Усі 26 ознак</summary><table class="allfeat" id="v-allfeat"></table></details>
+    </div>
+    <div class="card muted-card">
+      <h4>Додаткові ознаки <span class="tag" title="Реалізуються в дипломному проєкті">ДП</span></h4>
+      <dl class="kv">
+        <dt>Артефакти межі рука–обличчя</dt><dd>–</dd>
+        <dt>Тремтіння ключових точок</dt><dd>–</dd>
+      </dl>
+    </div>
+    <div class="card perf">
+      <h4>Швидкодія</h4>
+      <dl class="kv">
+        <dt>Детекція / ембединг</dt><dd id="p-det">–</dd>
+        <dt>Модуль виявлення атак</dt><dd id="p-pad">–</dd>
+        <dt>Затримка рішення</dt><dd id="p-lat">–</dd>
+      </dl>
+    </div>
+    <div class="actions">
+      <button class="btn" id="v-repeat" disabled>Повторити</button>
+      <button class="btn primary" id="v-main" disabled>Почати сеанс</button>
+    </div>
+  </aside>
+</main>
+
+<!-- Рисунок 4.8 – Екранна форма запису сеансів для набору даних -->
+<main id="view-record" class="view record" hidden>
+  <aside class="side">
+    <h3 class="cap">Дослідження</h3>
+    <ul class="menu">
+      <li class="active">● Запис сеансів</li>
+      <li class="off" title="Реалізується в дипломному проєкті">○ Набір даних</li>
+      <li class="off" title="Реалізується в дипломному проєкті">○ Експерименти</li>
+      <li class="off" title="Реалізується в дипломному проєкті">○ Моделі класифікатора</li>
+      <li class="off" title="Реалізується в дипломному проєкті">○ Звіти</li>
+    </ul>
+    <h3 class="cap">Набір даних</h3>
+    <div class="plain" id="r-summary">
+      <div>Учасників: <b id="s-participants">–</b></div>
+      <div>Сеансів: <b id="s-sessions">–</b></div>
+      <div>справжніх: <b id="s-bona">–</b> · атак: <b id="s-attack">–</b></div>
+      <div>Інструментів: <b id="s-tools">–</b></div>
+      <div>Цільових облич: <b id="s-targets">–</b></div>
+      <div>Розмічено: <b id="s-reviewed">–</b></div>
+    </div>
+    <div class="note">Прототип інтерфейсу · курсова робота</div>
+  </aside>
+
+  <section class="content">
+    <div class="pagehead">
+      <div>
+        <h1>Запис сеансу для набору даних</h1>
+        <p class="muted"><span id="r-protocol">Протокол збору DS-PILOT-01</span> · записи зберігаються зашифровано (AES-256-GCM), обличчя учасників не публікуються</p>
+      </div>
+      <button class="btn primary big" id="r-start" disabled>● Почати запис</button>
+    </div>
+
+    <div class="grid2">
+      <div class="card form">
+        <h2>Параметри сеансу</h2>
+        <div class="g3">
+          <label class="f">Учасник (псевдонім)<input id="r-participant" list="persons" value="P01" spellcheck="false" autocomplete="off"></label>
+          <label class="f">Камера<input id="r-webcam" list="cams" placeholder="модель, наприклад Logitech C270" autocomplete="off"></label>
+          <label class="f">Освітлення<select id="r-lighting"></select></label>
+        </div>
+        <label class="consent"><input type="checkbox" id="r-consent">
+          Письмову інформовану згоду учасника отримано (№ <input class="ref" id="r-consent-ref" placeholder="07/2026">) – <b>обов'язково</b></label>
+        <div class="cap small">Тип подання</div>
+        <div class="radios">
+          <label><input type="radio" name="ptype" value="bona_fide" checked> Справжнє (bona fide)</label>
+          <label><input type="radio" name="ptype" value="attack"> Атака підміни обличчя</label>
+        </div>
+        <div class="g3">
+          <label class="f">Інструмент підміни<select id="r-tool"></select></label>
+          <label class="f">Цільове обличчя<input id="r-target" list="persons" placeholder="T01 (синтетичне)" spellcheck="false" autocomplete="off"></label>
+          <label class="f">Джерело відео<select class="source-select" id="r-source"></select></label>
+        </div>
+        <div class="g3">
+          <label class="f">Стиснення<select disabled><option>mp4v · AES-256-GCM</option></select></label>
+          <label class="f">Кількість викликів<select id="r-count"></select></label>
+          <label class="f">Тривалість виклику<select id="r-duration"></select></label>
+        </div>
+        <p class="hint" id="r-hint"></p>
+      </div>
+
+      <div class="card">
+        <h2>Набір типів викликів</h2>
+        <div class="checks" id="r-types"></div>
+        <div class="preview">
+          <canvas class="frame blur" id="r-canvas"></canvas>
+          <div class="pv-label" id="r-pv-label">○ Попередній перегляд · <span id="r-source-label">камеру не ввімкнено</span></div>
+          <label class="pv-blur"><input type="checkbox" id="r-blur" checked> приховати обличчя</label>
+          <div class="pv-center" id="r-pv-center">
+            <div>Відеопотік (обличчя приховано)</div>
+            <button class="btn sm cam-on">Увімкнути камеру</button>
+          </div>
+          <div class="pv-instr" id="r-pv-instr" hidden>
+            <b><em id="r-instr" style="font-style:normal"></em><span id="r-remaining"></span></b>
+            <div class="bar"><i id="r-progress"></i></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Записані сеанси</h2>
+      <div class="table-wrap">
+        <table class="table" id="r-table">
+          <thead><tr><th>ID сеансу</th><th>Учасник</th><th>Тип</th><th>Інструмент</th><th>Ціль</th>
+            <th>Виклики</th><th>Умови</th><th>Тривалість</th><th>Статус</th></tr></thead>
+          <tbody><tr class="empty"><td colspan="9">завантаження…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<datalist id="persons"></datalist>
+<datalist id="cams"></datalist>
+<div class="toast" id="toast"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

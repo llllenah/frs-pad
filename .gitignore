@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+models/*.onnx
+models/pad_*.json
+data/
+runs/
+models/src/
+.venv-export/
+!runs/
+runs/*
+!runs/lfw_*.json

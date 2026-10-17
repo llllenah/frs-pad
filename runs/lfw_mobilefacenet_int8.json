@@ -1,0 +1,16 @@
+{
+  "embedder": "mobilefacenet_int8.onnx",
+  "embedder_size_mb": 1.26,
+  "detector": "MTCNN (P/R/O-Net ONNX)",
+  "detector_size_mb": 1.99,
+  "flip": false,
+  "pairs": 6000,
+  "accuracy": 0.993,
+  "accuracy_std": 0.0041,
+  "threshold_mean": 0.2972,
+  "detection_misses": 0,
+  "images": 7701,
+  "detect_ms_1280x720": 38.5,
+  "embed_ms": 2.49,
+  "eval_time_s": 264.6
+}
