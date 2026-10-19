@@ -11,3 +11,5 @@ models/src/
 !runs/
 runs/*
 !runs/lfw_*.json
+models/swap/
+dist/

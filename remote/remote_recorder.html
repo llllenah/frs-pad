@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Запис для набору даних</title>
+<style>
+  :root { --bg: #f6f7f9; --card: #fff; --ink: #1d2330; --muted: #5b6475; --accent: #1f6feb; --ok: #1a7f37; --warn: #b54708; --line: #d9dde5; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.5 system-ui, "Segoe UI", Arial, sans-serif; background: var(--bg); color: var(--ink); }
+  main { max-width: 980px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 22px; margin: 8px 0 4px; }
+  p.lead { color: var(--muted); margin: 0 0 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  label { display: block; font-weight: 600; margin: 10px 0 4px; }
+  input[type=text], select { width: 100%; max-width: 360px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; }
+  .check { display: flex; gap: 8px; align-items: flex-start; font-weight: 400; }
+  button { font: inherit; padding: 10px 18px; border-radius: 8px; border: 0; background: var(--accent); color: #fff; cursor: pointer; }
+  button:disabled { background: #9db7e6; cursor: default; }
+  button.secondary { background: #e7ecf5; color: var(--ink); }
+  .stage { position: relative; background: #111; border-radius: 10px; overflow: hidden; aspect-ratio: 16 / 9; }
+  video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .oval { position: absolute; left: 50%; top: 50%; width: 30%; height: 72%; transform: translate(-50%, -50%);
+          border: 3px dashed rgba(255,255,255,.7); border-radius: 50%; pointer-events: none; }
+  .overlay { position: absolute; left: 0; right: 0; bottom: 0; padding: 14px 18px; background: rgba(0,0,0,.62); color: #fff; }
+  .instr { font-size: 28px; font-weight: 700; line-height: 1.25; }
+  .sub { font-size: 16px; opacity: .85; }
+  .bar { height: 8px; background: rgba(255,255,255,.25); border-radius: 4px; margin-top: 8px; overflow: hidden; }
+  .bar > div { height: 100%; width: 0; background: #4ade80; }
+  .rec { position: absolute; top: 12px; left: 12px; color: #fff; background: #d1242f; padding: 2px 10px; border-radius: 12px; font-size: 14px; display: none; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  .muted { color: var(--muted); }
+  .err { color: #d1242f; }
+  a.dl { display: inline-block; margin: 6px 12px 6px 0; padding: 10px 16px; background: var(--ok); color: #fff; border-radius: 8px; text-decoration: none; }
+  ol { margin: 6px 0 0 20px; padding: 0; }
+  li { margin: 4px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Запис для набору даних курсової роботи</h1>
+  <p class="lead">Сторінка працює лише у вашому браузері: відео нікуди не надсилається, доки ви самі не передасте файли досліднику.</p>
+
+  <section class="card" id="step1">
+    <strong>1. Дані запису</strong>
+    <label for="pid">Ваш псевдонім (його дасть дослідник, наприклад P02)</label>
+    <input type="text" id="pid" placeholder="P02" autocomplete="off">
+    <label for="light">Освітлення</label>
+    <select id="light">
+      <option value="normal">Звичайне кімнатне</option>
+      <option value="daylight">Денне світло з вікна</option>
+      <option value="low">Слабке (вечір, одна лампа)</option>
+      <option value="backlight">Світло позаду (вікно за спиною)</option>
+    </select>
+    <label for="cam">Вебкамера (модель ноутбука або камери, якщо знаєте)</label>
+    <input type="text" id="cam" placeholder="наприклад, вбудована Lenovo IdeaPad 5">
+    <label for="nses">Кількість сеансів</label>
+    <select id="nses"><option>4</option><option selected>6</option><option>8</option></select>
+    <label class="check"><input type="checkbox" id="consent">
+      <span>Я підписав(-ла) форму інформованої згоди і передав(-ла) її досліднику. Я розумію, що запис містить моє обличчя.</span></label>
+    <div class="row" style="margin-top:14px">
+      <button id="btnCam">Увімкнути камеру</button>
+      <span id="msg1" class="muted"></span>
+    </div>
+  </section>
+
+  <section class="card" id="step2" hidden>
+    <strong>2. Запис</strong>
+    <ol class="muted">
+      <li>Сядьте так, щоб обличчя було в овалі, а освітлення падало спереду. Окуляри можна залишити, маску й капюшон зніміть.</li>
+      <li>Виконуйте інструкції, поки триває таймер і чути звуковий сигнал. «Ліва половина обличчя» – ваша ліва, тобто з боку вашої лівої руки.</li>
+      <li>Після кожної дії поверніться в звичайне положення і дивіться в камеру. Запис триває приблизно 2 хвилини.</li>
+    </ol>
+    <div class="stage" style="margin-top:12px">
+      <video id="video" autoplay playsinline muted></video>
+      <div class="oval"></div>
+      <div class="rec" id="recDot">● REC</div>
+      <div class="overlay">
+        <div class="instr" id="instr">Розмістіть обличчя в овалі</div>
+        <div class="sub" id="sub">Коли будете готові, натисніть «Почати запис»</div>
+        <div class="bar"><div id="barFill"></div></div>
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button id="btnRec">Почати запис</button>
+      <button id="btnStop" class="secondary" hidden>Перервати</button>
+      <span id="msg2" class="muted"></span>
+    </div>
+  </section>
+
+  <section class="card" id="step3" hidden>
+    <strong>3. Збережіть і передайте два файли</strong>
+    <p>Завантажте обидва файли та передайте їх досліднику способом, про який ви домовились (наприклад, особистим повідомленням у месенджері з шифруванням або через спільну папку з обмеженим доступом).</p>
+    <div id="links"></div>
+    <p class="muted">Після того як дослідник підтвердить отримання, видаліть файли зі свого комп'ютера і з повідомлень. Якщо щось пішло не так, запис можна повторити – просто оновіть сторінку.</p>
+  </section>
+</main>
+
+<script>
+"use strict";
+// Інструкції та тривалості – як у прототипі frs-pad (pad/challenges.py, configs/pad.yaml).
+const TYPES = ["cover_left", "cover_right", "cover_mouth", "turn_head", "hand_swipe"];
+const TEXT = {
+  cover_left: "Закрийте долонею ліву половину обличчя",
+  cover_right: "Закрийте долонею праву половину обличчя",
+  cover_mouth: "Закрийте долонею рот і підборіддя",
+  turn_head_left: "Поверніть голову ліворуч",
+  turn_head_right: "Поверніть голову праворуч",
+  hand_swipe: "Проведіть рукою перед обличчям",
+};
+const T = { settle: 1.5, enroll: 3.0, pause: 2.0, reference: 1.5, challenge: 3.0, after: 1.5, perSession: 3 };
+
+const $ = (id) => document.getElementById(id);
+let stream = null, recorder = null, chunks = [], t0 = null, aborted = false, audio = null;
+
+function randInt(n) { const a = new Uint32Array(1); crypto.getRandomValues(a); return a[0] % n; }
+function plan(nSessions) {
+  // випадкові типи без двох однакових поспіль (у межах і між сеансами), напрямок повороту – випадковий
+  const sessions = []; let prev = null;
+  for (let s = 0; s < nSessions; s++) {
+    const chs = [];
+    for (let k = 0; k < T.perSession; k++) {
+      let type; do { type = TYPES[randInt(TYPES.length)]; } while (type === prev);
+      prev = type;
+      const ch = { challenge_type: type };
+      if (type === "turn_head") ch.direction = randInt(2) ? "left" : "right";
+      chs.push(ch);
+    }
+    sessions.push(chs);
+  }
+  return sessions;
+}
+function now() { return (performance.now() - t0) / 1000; }
+function round(x) { return Math.round(x * 1000) / 1000; }
+function beep(freq = 880, dur = 0.12) {
+  try {
+    audio = audio || new AudioContext();
+    const o = audio.createOscillator(), g = audio.createGain();
+    o.frequency.value = freq; g.gain.value = 0.08; o.connect(g); g.connect(audio.destination);
+    o.start(); o.stop(audio.currentTime + dur);
+  } catch (e) { /* звук не обов'язковий */ }
+}
+function show(instr, sub) { $("instr").textContent = instr; $("sub").textContent = sub || ""; }
+function wait(seconds, label) {
+  return new Promise((resolve) => {
+    const start = performance.now();
+    const tick = () => {
+      if (aborted) return resolve();
+      const el = (performance.now() - start) / 1000;
+      $("barFill").style.width = Math.min(100, el / seconds * 100) + "%";
+      if (label) $("sub").textContent = label.replace("{s}", Math.max(0, Math.ceil(seconds - el)));
+      if (el >= seconds) return resolve();
+      requestAnimationFrame(tick);
+    };
+    tick();
+  });
+}
+
+$("btnCam").onclick = async () => {
+  const pid = $("pid").value.trim().toUpperCase();
+  if (!/^[A-Z0-9_-]{2,16}$/.test(pid)) { $("msg1").textContent = "Вкажіть псевдонім, наприклад P02."; $("msg1").className = "err"; return; }
+  if (!$("consent").checked) { $("msg1").textContent = "Без підписаної згоди запис неможливий."; $("msg1").className = "err"; return; }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }, audio: false });
+  } catch (e) {
+    $("msg1").textContent = "Немає доступу до камери: дозвольте його в браузері (" + e.name + ")."; $("msg1").className = "err"; return;
+  }
+  $("video").srcObject = stream;
+  $("step2").hidden = false; $("msg1").textContent = "Камеру увімкнено."; $("msg1").className = "muted";
+  $("step2").scrollIntoView({ behavior: "smooth" });
+};
+
+$("btnStop").onclick = () => { aborted = true; if (recorder && recorder.state !== "inactive") recorder.stop(); };
+
+$("btnRec").onclick = async () => {
+  const pid = $("pid").value.trim().toUpperCase();
+  const track = stream.getVideoTracks()[0];
+  const st = track.getSettings();
+  const mime = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm", "video/mp4"].find((m) => MediaRecorder.isTypeSupported(m)) || "";
+  chunks = []; aborted = false;
+  recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 6_000_000 });
+  recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+  const started = new Promise((r) => { recorder.onstart = r; });
+  const stopped = new Promise((r) => { recorder.onstop = r; });
+  recorder.start(1000);
+  await started;
+  t0 = performance.now();
+  $("btnRec").disabled = true; $("btnStop").hidden = false; $("recDot").style.display = "block";
+  $("msg2").textContent = "Йде запис…";
+
+  const nSes = parseInt($("nses").value, 10);
+  const ann = {
+    format: "frs-pad-remote/1",
+    participant: pid,
+    consent: true,
+    recorded_at: new Date().toISOString(),
+    conditions: { lighting: $("light").value, webcam: $("cam").value.trim() || track.label || "", source: "remote_browser",
+                  width: st.width || null, height: st.height || null, frame_rate: st.frameRate || null },
+    browser: navigator.userAgent,
+    mime_type: mime,
+    timing: T,
+    enroll: null,
+    sessions: [],
+  };
+
+  show("Дивіться прямо в камеру", "");
+  await wait(1.0);
+  const e0 = now();
+  await wait(T.enroll, "Не рухайтеся ще {s} с");
+  ann.enroll = { t_start: round(e0), t_end: round(now()) };
+
+  for (const [i, chs] of plan(nSes).entries()) {
+    if (aborted) break;
+    show(`Сеанс ${i + 1} з ${nSes}`, "Підготуйтеся, дивіться в камеру");
+    await wait(T.pause);
+    show("Дивіться прямо в камеру", "");
+    const r0 = now();
+    await wait(T.reference);
+    const sess = { reference: [round(r0), round(now())], challenges: [] };
+    for (const ch of chs) {
+      if (aborted) break;
+      const key = ch.challenge_type === "turn_head" ? "turn_head_" + ch.direction : ch.challenge_type;
+      beep(880);
+      show(TEXT[key], "");
+      const c0 = now();
+      await wait(T.challenge, "Тримайте ще {s} с");
+      const c1 = now();
+      beep(520);
+      sess.challenges.push({ ...ch, t_start: round(c0), t_end: round(c1) });
+      show("Поверніться у звичайне положення", "Дивіться в камеру");
+      await wait(T.after);
+    }
+    ann.sessions.push(sess);
+  }
+  show(aborted ? "Запис перервано" : "Готово, дякуємо!", "");
+  if (recorder.state !== "inactive") recorder.stop();
+  await stopped;
+  $("recDot").style.display = "none"; $("btnStop").hidden = true; $("btnRec").disabled = false;
+  if (aborted) { $("msg2").textContent = "Запис перервано, його не збережено. Можна почати знову."; return; }
+  ann.duration_s = round(now());
+
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  const ext = mime.includes("mp4") ? "mp4" : "webm";
+  const video = new Blob(chunks, { type: mime || "video/webm" });
+  const json = new Blob([JSON.stringify(ann, null, 1)], { type: "application/json" });
+  const links = $("links"); links.innerHTML = "";
+  for (const [blob, name] of [[video, `${pid}_${stamp}.${ext}`], [json, `${pid}_${stamp}.json`]]) {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = name; a.className = "dl";
+    a.textContent = `Завантажити ${name} (${(blob.size / 1e6).toFixed(1)} МБ)`;
+    links.appendChild(a);
+  }
+  $("msg2").textContent = "Запис завершено.";
+  $("step3").hidden = false; $("step3").scrollIntoView({ behavior: "smooth" });
+};
+</script>
+</body>
+</html>
