@@ -118,15 +118,18 @@ class OcclusionChallenge(Challenge):
     def measure(self, face, hand, frame, verifier) -> dict:
         info = verifier.coverage_info(face, hand)
         if self.side == "mouth":
-            side_ok = info["lower"]
+            # рот і підборіддя: частка площі всього обличчя
+            value, side_ok = info["coverage"], info["lower"]
         else:
-            side_ok = info["side"] == self.side
-        info["ok"] = bool(info["coverage"] >= self.min_coverage and side_ok)
+            # половина обличчя: частка площі цієї половини
+            value, side_ok = info[f"half_{self.side}"], info["side"] == self.side
+        info["value"] = value
+        info["ok"] = bool(value >= self.min_coverage and side_ok)
         return info
 
     def summary(self) -> dict:
         s = super().summary()
-        s["coverage"] = max((m["coverage"] for m in self.measures), default=0.0)
+        s["coverage"] = max((m["value"] for m in self.measures), default=0.0)
         return s
 
 

@@ -54,6 +54,20 @@ def test_cover_half_of_face(verifier, side):
     assert info["side"] == side
     small = verifier.coverage_info(face, hand_over_face(face, side, scale=0.6))
     assert small["coverage"] < 0.4
+    other = "right" if side == "left" else "left"
+    assert info[f"half_{side}"] > 0.6 and info[f"half_{other}"] < 0.2
+
+
+def test_half_coverage_counts_palm_on_one_half(verifier):
+    """Долоня на одній половині перекриває ≈ 0,3 обличчя, але більше 0,4 цієї половини."""
+    face = synthetic_face()
+    nose = face[1]
+    xs = face[:, 0]
+    width = xs.max() - xs.min()
+    hand = synthetic_hand((nose[0] + 0.3 * width, nose[1]), 0.45 * width, 0.9 * (face[:, 1].max() - face[:, 1].min()))
+    info = verifier.coverage_info(face, hand)
+    assert info["coverage"] < 0.4
+    assert info["side"] == "left" and info["half_left"] >= 0.4
 
 
 def test_left_half_is_on_image_right_in_raw_frame(verifier):

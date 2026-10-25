@@ -140,9 +140,12 @@ def enrolled_from_video(vf: VideoFrames, ann: dict, min_score: float = 0.9) -> n
 
 
 def face_ratio(vf: VideoFrames, ann: dict) -> float:
-    """Частка кадрів поза викликами з перекриттям, на яких знайдено обличчя (контроль якості)."""
-    covered = [(ch["t_start"], ch["t_end"]) for s in ann["sessions"] for ch in s.get("challenges") or []
-               if ch["challenge_type"] in HAND_TYPES]
+    """Частка кадрів поза вікнами викликів, на яких знайдено обличчя (контроль якості).
+
+    Вікна викликів не враховуються: під час перекриття обличчя закрите навмисно, а під час
+    повороту голови на 30° і більше детектор може втрачати обличчя в профіль.
+    """
+    covered = [(ch["t_start"], ch["t_end"]) for s in ann["sessions"] for ch in s.get("challenges") or []]
     frames = [f for f in vf.frames if not any(a <= f.t <= b for a, b in covered)]
     if not frames:
         return 0.0

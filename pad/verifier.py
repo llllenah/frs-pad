@@ -128,9 +128,10 @@ class ChallengeVerifier:
         """Частка перекриття c(t) за формулою (3.3) і сторона перекриття.
 
         side – «left», «right» або «center» з погляду користувача; lower – чи
-        лежить центр перекритої частини нижче кінчика носа.
+        лежить центр перекритої частини нижче кінчика носа; half_left, half_right –
+        перекрита частка лівої і правої половини обличчя.
         """
-        info = {"coverage": 0.0, "side": None, "lower": False}
+        info = {"coverage": 0.0, "side": None, "lower": False, "half_left": 0.0, "half_right": 0.0}
         if face is None or hand is None:
             return info
         face_hull = convex_hull(face)
@@ -153,6 +154,20 @@ class ChallengeVerifier:
         else:
             info["side"] = "center"
         info["lower"] = bool(np.dot(c - face[NOSE_TIP], down) > 0)
+        # частка перекриття кожної половини обличчя (межа – лінія через кінчик носа вздовж
+        # середньої лінії): для cover_left / cover_right поріг задається від площі половини,
+        # бо долоня на одній половині перекриває лише 0,2–0,35 площі всього обличчя
+        nose = face[NOSE_TIP].astype(float)
+        far = 10.0 * width
+        for side, sign in (("left", 1.0), ("right", -1.0)):
+            plane = convex_hull(np.array([nose - far * down, nose + far * down,
+                                          nose + far * down + sign * far * normal,
+                                          nose - far * down + sign * far * normal]))
+            half = clip_convex(face_hull, plane)
+            half_area = polygon_area(half) if len(half) >= 3 else 0.0
+            part = clip_convex(inter, plane) if len(inter) >= 3 else []
+            part_area = polygon_area(part) if len(part) >= 3 else 0.0
+            info[f"half_{side}"] = part_area / half_area if half_area > 1e-6 else 0.0
         return info
 
     def coverage(self, face: np.ndarray | None, hand: np.ndarray | None) -> float:

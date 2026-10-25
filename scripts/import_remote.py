@@ -61,7 +61,7 @@ def import_recording(video: Path, annotation: dict, *, presentation_type: str = 
     log(f"оброблено {len(vf.frames)} кадрів {vf.size[0]}×{vf.size[1]} за {time.perf_counter() - t0:.0f} с")
 
     ratio = face_ratio(vf, annotation)
-    log(f"контроль якості: обличчя на {ratio:.1%} кадрів поза викликами з перекриттям")
+    log(f"контроль якості: обличчя на {ratio:.1%} кадрів поза вікнами викликів")
     if ratio < MIN_FACE_RATIO and not force:
         raise ValueError(f"обличчя знайдено лише на {ratio:.1%} кадрів (потрібно ≥ {MIN_FACE_RATIO:.0%}); "
                          "попросіть учасника перезаписати або додайте --force")
