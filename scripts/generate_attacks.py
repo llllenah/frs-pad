@@ -4,23 +4,29 @@
 кадр за кадром моделлю inswapper_128 (як у Deep-Live-Cam): обличчя A
 замінюється обличчям цільової особи B. Виклики, часові мітки і поведінка
 лишаються з оригінального запису, тому анотація A підходить і для атаки.
-Далі результат імпортується як атака на заявлену особу B:
 
-    python scripts/generate_attacks.py P02.webm --source-video P03.webm --source-annotation P03.json -o P02_as_P03.mp4
-    python scripts/import_remote.py P02_as_P03.mp4 P02.json --type attack --tool deep_live_cam --target P03
+    python scripts/generate_attacks.py A.webm --source-video B.webm --source-annotation B.json -o A_as_B.avi
+    python scripts/import_remote.py A_as_B.avi A.json --type attack --tool deep_live_cam --target B
+
+Справжній запис для набору спершу проходить той самий скрипт без підміни:
+
+    python scripts/generate_attacks.py A.webm --passthrough -o A.avi
+    python scripts/import_remote.py A.avi A.json
+
+Так обидва класи мають однакові кадри, мітки часу і кодек (MJPG, якість 95),
+і класифікатор не може відрізнити атаку за частотою кадрів чи артефактами
+повторного стиснення. Кожен кадр входу дає один кадр виходу, мітки часу
+оригіналу (webm має змінну частоту кадрів) записуються в <вихід>.times.json,
+і import_remote.py бере їх звідти.
 
 Якщо на кадрі обличчя не знайдено (наприклад, його закрито рукою), кадр
 лишається без змін – так само поводиться Deep-Live-Cam, і саме цей ефект
 перевіряють виклики з перекриттям.
 
-Вихід – MP4 з постійною частотою кадрів (типово 30): для кожного моменту
-k/fps береться останній кадр оригіналу з міткою часу ≤ k/fps, тому часові
-мітки анотації зберігаються і для webm зі змінною частотою кадрів.
 Швидкість inswapper_128 на CPU – 0,3–2 кадри/с залежно від процесора
-(на ноутбуці автора 2,7 с на кадр, тобто ≈ 1,5 год на 1 хв відео при 30 кадр/с). Запуск можна лишити у фоні на ніч. Для набору даних частота кадрів має
-збігатися зі справжніми записами (30), інакше ознаки дрейфу залежатимуть від fps;
---fps нижче 30 – лише для швидкого перегляду. У Google Colab
-з безкоштовним GPU T4 (notebooks/generate_attacks_colab.ipynb) – десятки кадрів/с.
+(на ноутбуці автора ≈ 2,7 с на кадр, тобто ≈ 1–1,5 год на 1 хв відео);
+запуск можна лишити у фоні на ніч. У Google Colab з безкоштовним GPU T4
+(notebooks/generate_attacks_colab.ipynb) – десятки кадрів/с.
 """
 
 from __future__ import annotations
@@ -88,33 +94,33 @@ def source_embedding(arcface: ArcFace, detector: MTCNN, image: Path | None = Non
     return e / np.linalg.norm(e)
 
 
-def swap_video(video: Path, out: Path, latent: np.ndarray, swapper: InSwapper, detector: MTCNN,
-               fps_out: float = 30.0, log=print) -> dict:
-    """Підміняє обличчя в кожному кадрі; повертає статистику."""
+def times_path(video: Path) -> Path:
+    """Файл з мітками часу кадрів, який супроводжує відео з generate_attacks.py."""
+    return video.with_name(video.name + ".times.json")
+
+
+def swap_video(video: Path, out: Path, latent: np.ndarray | None, swapper: InSwapper | None,
+               detector: MTCNN | None, log=print) -> dict:
+    """Підміняє обличчя в кожному кадрі; latent=None – копія без підміни.
+
+    Кожен кадр входу дає рівно один кадр виходу, а мітки часу кадрів оригіналу
+    зберігаються поруч (<вихід>.times.json) і використовуються при імпорті. Справжні
+    записи для набору проходять ту саму функцію без підміни, тому обидва класи мають
+    однакові кадри, мітки часу і кодек (MJPG, якість 95) – класифікатор не може
+    відрізнити атаку за частотою кадрів чи артефактами стиснення.
+    """
     cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
         raise FileNotFoundError(f"не вдалося відкрити відео {video}")
     fps_in = cap.get(cv2.CAP_PROP_FPS)
     if not fps_in or fps_in > 120:
-        fps_in = fps_out
-    writer = None
-    k = 0
+        fps_in = 30.0
+    frames, times = [], []
     prev_t = -1.0
     i = swapped = 0
-    last = None  # [кадр, чи вже підмінено]
     started = time.perf_counter()
-
-    def ready(item):
-        # підміна лише для кадрів, які справді потрапляють у вихід (при --fps нижче за вхідну)
-        nonlocal swapped
-        if not item[1]:
-            face = largest_face(detector, item[0])
-            if face is not None:
-                item[0] = swapper.swap(item[0], face.landmarks5, latent)
-                swapped += 1
-            item[1] = True
-        return item[0]
-
+    tmp = out.with_name(out.stem + ".part" + out.suffix)
+    writer = None
     while True:
         ok, frame = cap.read()
         if not ok:
@@ -125,26 +131,27 @@ def swap_video(video: Path, out: Path, latent: np.ndarray, swapper: InSwapper, d
             t = prev_t + 1.0 / fps_in
         prev_t = t
         i += 1
+        if latent is not None:
+            face = largest_face(detector, frame)
+            if face is not None:
+                frame = swapper.swap(frame, face.landmarks5, latent)
+                swapped += 1
         if writer is None:
             h, w = frame.shape[:2]
             out.parent.mkdir(parents=True, exist_ok=True)
-            writer = cv2.VideoWriter(str(out), cv2.VideoWriter_fourcc(*"mp4v"), fps_out, (w, h))
-        # моменти k/fps_out до t заповнюються попереднім кадром
-        while last is not None and k / fps_out < t:
-            writer.write(ready(last))
-            k += 1
-        last = [frame, False]
-        if i % 150 == 0:
+            writer = cv2.VideoWriter(str(tmp), cv2.VideoWriter_fourcc(*"MJPG"), 30.0, (w, h))
+            writer.set(cv2.VIDEOWRITER_PROP_QUALITY, 95)
+        writer.write(frame)
+        times.append(round(t, 4))
+        if latent is not None and i % 150 == 0:
             el = time.perf_counter() - started
-            log(f"  {t:.1f} с відео, підмінено {swapped} кадрів, {swapped / el:.2f} кадр/с")
-    if last is not None:
-        writer.write(ready(last))
-        k += 1
+            log(f"  {t:.1f} с відео, кадр {i}, {i / el:.2f} кадр/с")
     cap.release()
     if writer is not None:
         writer.release()
-    return {"frames_in": i, "frames_out": k, "swapped": swapped,
-            "seconds": round(time.perf_counter() - started, 1)}
+        tmp.replace(out)
+        times_path(out).write_text(json.dumps(times), encoding="utf-8")
+    return {"frames": i, "swapped": swapped, "seconds": round(time.perf_counter() - started, 1)}
 
 
 def main() -> int:
@@ -152,16 +159,21 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("video", help="справжній запис учасника A (.webm або .mp4)")
     src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--passthrough", action="store_true",
+                     help="без підміни: копія справжнього запису з тими самими кадрами і кодеком")
     src.add_argument("--source-image", help="фото цільової особи B")
     src.add_argument("--source-video", help="справжній запис цільової особи B")
     ap.add_argument("--source-annotation", help="анотація запису B (береться вікно enroll)")
-    ap.add_argument("-o", "--out", required=True, help="вихідне відео .mp4")
-    ap.add_argument("--fps", type=float, default=30.0)
+    ap.add_argument("-o", "--out", required=True, help="вихідне відео .avi (MJPG)")
     ap.add_argument("--models", default=str(ROOT / "models"), help="каталог з mtcnn_*.onnx")
     ap.add_argument("--swap-models", default=str(ROOT / "models" / "swap"),
                     help="каталог inswapper_128.onnx і w600k_r50.onnx (завантажуються, якщо немає)")
     ap.add_argument("--cpu", action="store_true", help="не використовувати CUDA навіть за наявності")
     args = ap.parse_args()
+    if args.passthrough:
+        stats = swap_video(Path(args.video), Path(args.out), None, None, None)
+        print(f"готово: {args.out}; кадрів {stats['frames']}, {stats['seconds']} с")
+        return 0
 
     swap_dir = ensure_models(args.swap_models)
     providers = ["CPUExecutionProvider"] if args.cpu else None
@@ -174,10 +186,10 @@ def main() -> int:
     emb = source_embedding(arcface, detector,
                            image=Path(args.source_image) if args.source_image else None,
                            video=Path(args.source_video) if args.source_video else None, annotation=ann)
-    stats = swap_video(Path(args.video), Path(args.out), swapper.latent(emb), swapper, detector, args.fps)
-    print(f"готово: {args.out}; кадрів {stats['frames_in']} → {stats['frames_out']}, "
+    stats = swap_video(Path(args.video), Path(args.out), swapper.latent(emb), swapper, detector)
+    print(f"готово: {args.out}; кадрів {stats['frames']}, "
           f"обличчя підмінено на {stats['swapped']} кадрах, {stats['seconds']} с")
-    if stats["frames_out"] and stats["swapped"] / stats["frames_out"] < 0.5:
+    if stats["frames"] and stats["swapped"] / stats["frames"] < 0.5:
         print("увага: обличчя підмінено менше ніж на половині кадрів, перевірте відео")
     return 0
 

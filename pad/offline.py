@@ -100,8 +100,12 @@ def _needs_hands(t: float, ann: dict) -> bool:
 
 
 def run_pipeline(video: str | Path, pipeline: FramePipeline, ann: dict | None = None,
-                 progress=None) -> VideoFrames:
-    """Проганяє всі кадри відео через конвеєр; час кадру – мітка часу кадру у файлі."""
+                 progress=None, times: list[float] | None = None) -> VideoFrames:
+    """Проганяє всі кадри відео через конвеєр; час кадру – мітка часу кадру у файлі.
+
+    times – мітки часу кадрів оригіналу (файл .times.json від generate_attacks.py);
+    якщо їх задано, вони замінюють мітки часу з файлу.
+    """
     cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
         raise FileNotFoundError(f"не вдалося відкрити відео {video}")
@@ -115,10 +119,15 @@ def run_pipeline(video: str | Path, pipeline: FramePipeline, ann: dict | None = 
         if not ok:
             break
         # записи MediaRecorder (webm) мають змінну частоту кадрів: беремо мітку часу кадру
-        pos = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
-        t = pos if pos > prev_t and (i > 0 or pos >= 0) and pos < 1e5 else i / fps
-        if t <= prev_t:
-            t = prev_t + 1.0 / fps
+        if times is not None:
+            if i >= len(times):
+                break
+            t = float(times[i])
+        else:
+            pos = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+            t = pos if pos > prev_t and (i > 0 or pos >= 0) and pos < 1e5 else i / fps
+            if t <= prev_t:
+                t = prev_t + 1.0 / fps
         prev_t = t
         hands = True if ann is None else _needs_hands(t, ann)
         fd, _ = pipeline.process(frame, t, landmarks=True, hands=hands)

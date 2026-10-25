@@ -56,7 +56,9 @@ def import_recording(video: Path, annotation: dict, *, presentation_type: str = 
     settings = PadSettings.from_dict(cfg.get("pad", {}))
     pipeline, _ = build_runtime(cfg)
     t0 = time.perf_counter()
-    vf = run_pipeline(video, pipeline, annotation,
+    times_file = video.with_name(video.name + ".times.json")    # від generate_attacks.py
+    times = json.loads(times_file.read_text(encoding="utf-8")) if times_file.exists() else None
+    vf = run_pipeline(video, pipeline, annotation, times=times,
                       progress=lambda i, n: log(f"  кадр {i}/{n or '?'}") if i % 300 == 0 else None)
     log(f"оброблено {len(vf.frames)} кадрів {vf.size[0]}×{vf.size[1]} за {time.perf_counter() - t0:.0f} с")
 
@@ -114,6 +116,8 @@ def import_recording(video: Path, annotation: dict, *, presentation_type: str = 
         performed += sum(1 for ch in rec["decision"]["explanation"]["attempts"][0] if ch["performed"])
     total = sum(len(s.get("challenges") or []) for s in annotation["sessions"])
     write_encrypted(rec_dir / f"video{video.suffix}", video.read_bytes(), key)
+    if times is not None:
+        write_encrypted(rec_dir / "frame_times.json", json.dumps(times).encode("utf-8"), key)
     write_encrypted(rec_dir / "annotation.json", json.dumps(annotation, ensure_ascii=False).encode("utf-8"), key)
     log(f"сеансів: {len(records)}, виконано викликів: {performed} з {total}")
     log(f"записано зашифрованим: {rec_dir}")
@@ -156,6 +160,7 @@ def main() -> int:
         # звичайне видалення: на диску можуть лишитися залишки (див. «Обмеження прототипу» в README)
         video.unlink()
         ann_path.unlink()
+        video.with_name(video.name + ".times.json").unlink(missing_ok=True)
         print("відкриті файли видалено")
     return 0
 

@@ -249,3 +249,23 @@ def test_swap_changes_identity_to_target():
     swapped = sw.swap(a, fa.landmarks5, sw.latent(eb))
     es = arc.embed(swapped, largest_face(det, swapped).landmarks5)
     assert es @ eb > 0.6 and es @ ea < 0.3
+
+
+def test_passthrough_keeps_frames_and_source_timestamps(tmp_path):
+    from scripts.generate_attacks import swap_video, times_path
+
+    src = tmp_path / "src.mp4"
+    w = cv2.VideoWriter(str(src), cv2.VideoWriter_fourcc(*"mp4v"), 15, (64, 48))
+    for i in range(20):
+        w.write(np.full((48, 64, 3), i * 10, np.uint8))
+    w.release()
+    out = tmp_path / "copy.avi"
+    st = swap_video(src, out, None, None, None, log=lambda *_: None)
+    times = json.loads(times_path(out).read_text(encoding="utf-8"))
+    assert st["frames"] == 20 and len(times) == 20
+    assert times[1] - times[0] == pytest.approx(1 / 15, abs=1e-3)   # мітки оригіналу 15 кадр/с, хоч файл 30
+    cap = cv2.VideoCapture(str(out))
+    n = 0
+    while cap.read()[0]:
+        n += 1
+    assert n == 20
