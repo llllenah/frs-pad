@@ -117,9 +117,11 @@ class OcclusionChallenge(Challenge):
 
     def measure(self, face, hand, frame, verifier) -> dict:
         info = verifier.coverage_info(face, hand)
+        # частка рахується від площі тієї частини обличчя, яку треба закрити: долоня закриває
+        # лише 0,2–0,4 площі всього обличчя, тож поріг від усього обличчя для людей недосяжний
         if self.side == "mouth":
-            # рот і підборіддя: частка площі всього обличчя
-            value, side_ok = info["coverage"], info["lower"]
+            # рот і підборіддя: частка нижньої частини обличчя (нижче кінчика носа)
+            value, side_ok = info["lower_part"], info["lower"]
         else:
             # половина обличчя: частка площі цієї половини
             value, side_ok = info[f"half_{self.side}"], info["side"] == self.side
@@ -150,7 +152,11 @@ class HeadTurnChallenge(Challenge):
 
     def measure(self, face, hand, frame, verifier) -> dict:
         if frame.face is None:  # для повороту потрібні точки саме цього кадру
-            return {"yaw": None, "ok": False}
+            # при повороті на 60° і більше Face Mesh втрачає обличчя в профіль: якщо перед цим
+            # кут уже перевищив поріг, поворот вважається продовженим (не довше face_hold_s)
+            last = next((m for m in reversed(self.measures) if m.get("yaw") is not None), None)
+            held = bool(last is not None and last["ok"] and frame.t - last["t"] <= self.face_hold_s)
+            return {"yaw": None, "ok": held}
         yaw, pitch, roll = verifier.head_pose(frame.face, frame.size)
         sign = 1.0 if self.direction == "left" else -1.0
         return {"yaw": yaw, "pitch": pitch, "roll": roll,

@@ -189,3 +189,27 @@ def test_hand_offset_sign(verifier):
     fw = float(np.linalg.norm(face[454] - face[234]))
     hand = synthetic_hand((face[1, 0] + 0.5 * fw, face[1, 1]), 0.5 * fw, 0.8 * fw)
     assert verifier.hand_offset(face, hand) == pytest.approx(0.5, abs=0.02)  # ліва сторона користувача
+
+
+def test_mouth_cover_measured_against_lower_part(verifier):
+    face = synthetic_face()
+    info = verifier.coverage_info(face, hand_over_face(face, "mouth", 1.0))
+    assert info["lower"] and info["lower_part"] > info["coverage"]
+    assert info["lower_part"] >= 0.4
+
+
+def test_head_turn_continues_when_profile_face_is_lost(verifier):
+    from pad.challenges import HeadTurnChallenge
+
+    ch = HeadTurnChallenge("left", 30.0, consecutive_frames=5, face_hold_s=1.0)
+    turned = synthetic_face(yaw=45.0)
+    frames = [FrameData(t=i / 30, face=turned, size=SIZE) for i in range(3)]
+    frames += [FrameData(t=(3 + i) / 30, face=None, size=SIZE) for i in range(4)]
+    for f in frames:
+        ch.add_frame(f, verifier)
+    assert ch.is_performed(verifier)
+    # без попереднього повороту зникнення обличчя виклик не зараховує
+    ch2 = HeadTurnChallenge("left", 30.0, consecutive_frames=5, face_hold_s=1.0)
+    for i in range(8):
+        ch2.add_frame(FrameData(t=i / 30, face=None, size=SIZE), verifier)
+    assert not ch2.is_performed(verifier)

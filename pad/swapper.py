@@ -28,12 +28,12 @@ SWAP_FILES = {
 }
 
 
-def _session(path: Path, providers: list[str] | None):
+def _session(path: Path, providers: list[str] | None, threads: int | None = None):
     import onnxruntime as ort
 
     opts = ort.SessionOptions()
     opts.log_severity_level = 3
-    opts.intra_op_num_threads = os.cpu_count() or 4
+    opts.intra_op_num_threads = threads or os.cpu_count() or 4
     available = ort.get_available_providers()
     providers = [p for p in (providers or ["CUDAExecutionProvider", "CPUExecutionProvider"]) if p in available]
     return ort.InferenceSession(str(path), opts, providers=providers)
@@ -54,8 +54,8 @@ def norm_crop_matrix(landmarks5: np.ndarray, size: int) -> np.ndarray:
 class ArcFace:
     """Ембединг ArcFace w600k_r50 (512) для джерела ідентичності inswapper."""
 
-    def __init__(self, path: str | Path, providers: list[str] | None = None):
-        self.session = _session(Path(path), providers)
+    def __init__(self, path: str | Path, providers: list[str] | None = None, threads: int | None = None):
+        self.session = _session(Path(path), providers, threads)
         self.input = self.session.get_inputs()[0].name
 
     def embed(self, image_bgr: np.ndarray, landmarks5: np.ndarray) -> np.ndarray:
@@ -71,13 +71,13 @@ class InSwapper:
 
     size = 128
 
-    def __init__(self, path: str | Path, providers: list[str] | None = None):
+    def __init__(self, path: str | Path, providers: list[str] | None = None, threads: int | None = None):
         import onnx
         from onnx import numpy_helper
 
         model = onnx.load(str(path))
         self.emap = numpy_helper.to_array(model.graph.initializer[-1])
-        self.session = _session(Path(path), providers)
+        self.session = _session(Path(path), providers, threads)
         self.inputs = [i.name for i in self.session.get_inputs()]
 
     def latent(self, source_embedding: np.ndarray) -> np.ndarray:
