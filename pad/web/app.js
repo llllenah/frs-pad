@@ -1,7 +1,7 @@
-// Односторінковий інтерфейс прототипу: форми 4.7 (сеанс верифікації) і 4.8 (запис сеансів).
-// Браузер захоплює кадри камери, надсилає їх серверу через WebSocket /ws/stream
-// (8 байт часу кадру + JPEG) і малює відповідь: точки обличчя і кисті, стан сеансу,
-// ряди s_ref(t), s_enr(t), ознаки, оцінку і рішення.
+// Односторінковий інтерфейс прототипу: форми 4.7 (сеанс верифікації) і 4.8 (запис сеансів),
+// вкладка «Моніторинг» (ідентифікація 1:N). Браузер захоплює кадри камери, надсилає їх серверу
+// через WebSocket /ws/stream (8 байт часу кадру + JPEG) і малює відповідь: точки обличчя і кисті,
+// стан сеансу, ряди s_ref(t), s_enr(t), ознаки, оцінку і рішення або рамки розпізнаних облич.
 'use strict';
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -35,10 +35,12 @@ const SUBTEXT = {
 };
 const SIDE_TEXT = { left: 'ліва', right: 'права', center: 'центр' };
 const LIGHT_SHORT = { normal: 'норм.', low: 'слабке', bright: 'яскраве', backlight: 'контрове' };
+// Рамки моніторингу: відома особа – зелена, невідома – червона (єдині кольорові елементи інтерфейсу).
+const KNOWN_COLOR = '#16a34a', UNKNOWN_COLOR = '#dc2626';
 
 const App = {
   config: null, participants: [], view: 'verify',
-  session: null, frame: null, enroll: null, recordings: null,
+  session: null, frame: null, enroll: null, recordings: null, monitor: null,
 };
 
 // ----- службові -----
@@ -135,6 +137,8 @@ function cameraChanged() {
   fillDevices();
   $('#v-cam').textContent = Cam.active ? `● ${Cam.label}` : '● камеру не ввімкнено';
   $('#v-placeholder').hidden = Cam.active;
+  $('#m-placeholder').hidden = Cam.active;
+  $('#m-cam').textContent = Cam.active ? `● ${Cam.label}` : '● камеру не ввімкнено';
   $('#r-pv-center').hidden = Cam.active;
   $('#r-source-label').textContent = Cam.active ? Cam.label : 'камеру не ввімкнено';
   if (!Cam.active) App.frame = null;
@@ -157,7 +161,13 @@ const Stream = {
 
   connect() {
     const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/stream`);
-    ws.onopen = () => { this.open = true; this.inflight = false; setLive(); schedule(); };
+    ws.onopen = () => {
+      this.open = true;
+      this.inflight = false;
+      setLive();
+      if (App.view === 'monitor') this.send({ cmd: 'monitor', on: true });
+      schedule();
+    };
     ws.onclose = () => {
       this.open = false;
       this.inflight = false;
@@ -236,6 +246,10 @@ function onMessage(m) {
   } else if (m.type === 'enroll_started') {
     App.enroll = { person_id: m.person_id, progress: 0 };
     render();
+  } else if (m.type === 'monitor_started') {
+    App.monitor = m.monitor;
+    App.frame = null;
+    render();
   } else if (m.type === 'error') {
     toast(m.message, 'err');
   }
@@ -255,7 +269,8 @@ function sessionFinished(s) {
     else toast(`Запис збережено (AES-256-GCM): ${s.record_name}`);
     refreshRecordings();
   } else if (s.decision) {
-    toast(`Рішення: ${DECISION_TEXT[s.decision.decision].toLowerCase()}`);
+    const back = s.origin === 'monitor' ? ' · результат записано в журнал моніторингу' : '';
+    toast(`Рішення: ${DECISION_TEXT[s.decision.decision].toLowerCase()}${back}`);
   }
 }
 
@@ -287,6 +302,15 @@ async function cancelSession() {
 
 function startVerify() {
   return startSession({ mode: 'verify', claimed_person_id: $('#v-person').value.trim() });
+}
+
+// З моніторингу: перевірка розпізнаної особи активними викликами (захист від підміни обличчя).
+async function checkPerson(pid) {
+  if (isActive(App.session)) { toast('Спершу завершіть поточний сеанс', 'err'); return; }
+  $('#v-person').value = pid;
+  renderPersonInfo();
+  location.hash = '#/verify';
+  await startSession({ mode: 'verify', claimed_person_id: pid, origin: 'monitor' });
 }
 
 // ----- еталони -----
@@ -408,6 +432,34 @@ function boxLabel(s) {
   }
   const arrow = cur != null && prev != null ? (cur < prev - 0.05 ? ' ↓' : cur > prev + 0.05 ? ' ↑' : '') : '';
   return `${s.claimed_person_id}? ${fmt(cur)}${arrow}`;
+}
+
+// Рамки моніторингу: зелена з псевдонімом і подібністю або червона «Невідома особа».
+function drawMonitor(canvas, m) {
+  drawFrame(canvas, null, '');
+  const faces = m && m.monitor ? m.monitor.faces : [];
+  if (!Cam.active || !faces.length) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, k = W / 1280;
+  const X = x => W - x;
+  const fs = Math.round(Math.max(14, 28 * k)), pad = 6 * k;
+  ctx.font = `600 ${fs}px "Segoe UI", Arial, sans-serif`;
+  ctx.textBaseline = 'bottom';
+  for (const f of faces) {
+    const [x, y, w, h] = f.box;
+    const color = f.known ? KNOWN_COLOR : UNKNOWN_COLOR;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(2, 4 * k);
+    ctx.strokeRect(X(x + w), y, w, h);
+    const sim = f.similarity != null ? ` · ${fmt(f.similarity)}` : '';
+    const label = `${f.known ? f.person_id : 'Невідома особа'}${sim}`;
+    const tw = ctx.measureText(label).width;
+    const lx = X(x + w), ly = Math.max(fs + 2 * pad, y - 2 * k);
+    ctx.fillStyle = color;
+    ctx.fillRect(lx - ctx.lineWidth / 2, ly - fs - 2 * pad, tw + 2 * pad, fs + 2 * pad);
+    ctx.fillStyle = '#fff';
+    ctx.fillText(label, lx + pad, ly - pad);
+  }
 }
 
 // ----- графік s_ref(t), s_enr(t) -----
@@ -554,6 +606,7 @@ function renderVerify() {
 
   // ліва колонка
   $('#v-code').textContent = s ? s.code : '–';
+  $('#v-back').hidden = !(s && s.origin === 'monitor');
   $('#v-state').textContent = s ? `стан: ${s.state_text}` : (App.enroll ? 'реєстрація еталона…' : 'сеанс не розпочато');
   const list = $('#v-challenges');
   if (s && s.challenges.length) {
@@ -628,6 +681,85 @@ function renderVerify() {
   main.disabled = !active && (!Cam.active || !Stream.open || !!App.enroll || isActive(App.session));
   $('#v-repeat').disabled = !s || !Cam.active || !!App.enroll;
   $('#v-enroll').disabled = !Cam.active || active || !!App.enroll;
+}
+
+// ----- моніторинг -----
+
+let facesKey = null, logKey = null;
+
+function eventCells(e) {
+  if (e.kind === 'pad') {
+    const text = DECISION_TEXT[e.decision] ? DECISION_TEXT[e.decision].toLowerCase() : e.decision;
+    return `<td>${esc(e.person_id)} · перевірка: <b>${esc(text)}</b></td><td>${e.score != null ? 'оцінка ' + fmt(e.score) : '–'}</td>`;
+  }
+  const who = e.kind === 'known' ? esc(e.person_id) : '<b class="unknown">невідома</b>';
+  return `<td>${who}</td><td>${fmt(e.similarity)}</td>`;
+}
+
+function renderMonitor() {
+  const f = App.frame && App.frame.monitor ? App.frame : null;
+  const mon = f ? f.monitor : null;
+  const st = App.monitor;
+  drawMonitor($('#m-canvas'), f);
+  const fps = Stream.fps();
+  $('#m-fps').textContent = f ? `FPS ${fmt(fps, 1)} · ${Math.round(f.timings.total_ms)} мс` : 'FPS – · – мс';
+
+  // база еталонів
+  const thr = mon ? mon.threshold : (st ? st.threshold : App.config.monitoring.threshold);
+  $('#m-count').textContent = mon ? mon.gallery : (st ? st.ids.length : '–');
+  $('#m-ids').innerHTML = st ? st.ids.map(id => `<li>${esc(id)}</li>`).join('') : '';
+  const locked = st ? st.locked : [];
+  $('#m-locked').textContent = locked.length
+    ? `ще ${locked.length} зашифровано, ключ PAD_DATASET_KEY не задано або інший: ${locked.join(', ')}`
+    : (st && !st.ids.length ? 'база порожня – зареєструйте еталон на вкладці «Верифікація»' : '');
+  $('#m-threshold').textContent = fmt(thr);
+  $('#m-backend').textContent = st ? st.backend.split(' ')[0] : App.config.monitoring.backend.split(' ')[0];
+  $('#m-backend').title = st ? st.backend : App.config.monitoring.backend;
+  $('#m-embedder').textContent = (App.config.embedder || '–').split(' ')[0].replace(/_/g, ' ');
+
+  // сповіщення про невідому особу
+  const alert = mon && mon.alert;
+  $('#m-alert').hidden = !alert;
+  if (alert) {
+    const who = alert.count > 1 ? `${alert.count} облич немає` : 'обличчя немає';
+    const sim = alert.similarity != null ? ` · подібність ${fmt(alert.similarity)} < ${fmt(thr)}` : '';
+    $('#m-alert-sub').textContent = mon.gallery ? `${who} в базі еталонів${sim}` : 'база еталонів порожня';
+  }
+
+  // обличчя в кадрі: список перебудовується лише тоді, коли змінився склад облич,
+  // інакше кнопка «Перевірити» зникала б між натисканням і відпусканням
+  const faces = mon ? mon.faces : [];
+  const key = faces.map(x => (x.known ? x.person_id : '?')).join('|');
+  const list = $('#m-faces');
+  if (key !== facesKey) {
+    facesKey = key;
+    list.innerHTML = faces.length ? faces.map(x => x.known
+      ? `<li class="known"><i></i><span class="who">${esc(x.person_id)}</span><span class="sim"></span>
+         <button class="btn sm" data-check="${esc(x.person_id)}" title="Сеанс верифікації з активними викликами для ${esc(x.person_id)}">Перевірити</button></li>`
+      : `<li class="unknown"><i></i><span class="who">Невідома особа<small></small></span><span class="sim"></span></li>`).join('')
+      : `<li class="empty">${Cam.active ? 'облич не виявлено' : 'камеру не ввімкнено'}</li>`;
+  }
+  $$('#m-faces li:not(.empty)').forEach((li, i) => {
+    const x = faces[i];
+    if (!x) return;
+    $('.sim', li).textContent = fmt(x.similarity);
+    const small = $('small', li);
+    if (small) small.textContent = x.nearest ? `найближчий еталон: ${x.nearest}` : '';
+  });
+
+  // журнал подій
+  const events = mon ? mon.events : (st ? st.events.slice(0, 12) : []);
+  const lk = events.length ? `${events.length}|${events[0].time}|${events[0].kind}|${events[0].person_id}` : '';
+  if (lk !== logKey) {
+    logKey = lk;
+    $('#m-log tbody').innerHTML = events.length
+      ? events.map(e => `<tr class="${e.kind}"><td class="mono">${esc(e.time)}</td>${eventCells(e)}</tr>`).join('')
+      : '<tr class="empty"><td colspan="3">подій ще немає</td></tr>';
+  }
+
+  // швидкодія
+  $('#m-p-det').textContent = f ? `${fmt(f.timings.detect_ms, 0)} / ${fmt(f.timings.embed_ms, 0)} мс` : '–';
+  $('#m-p-search').textContent = f && f.timings.search_ms != null ? `${fmt(f.timings.search_ms, 2)} мс` : '–';
 }
 
 // ----- форма 4.8 -----
@@ -757,14 +889,27 @@ async function review(name, reviewed) {
 
 function render() {
   if (!App.config) return;
-  if (App.view === 'verify') renderVerify(); else renderRecord();
+  if (App.view === 'verify') renderVerify();
+  else if (App.view === 'monitor') renderMonitor();
+  else renderRecord();
 }
 
+const VIEWS = { '#/record': 'record', '#/monitor': 'monitor' };
+
 function route() {
-  App.view = location.hash === '#/record' ? 'record' : 'verify';
-  $('#view-verify').hidden = App.view !== 'verify';
-  $('#view-record').hidden = App.view !== 'record';
+  const prev = App.view;
+  App.view = VIEWS[location.hash] || 'verify';
+  for (const v of ['verify', 'monitor', 'record']) $(`#view-${v}`).hidden = App.view !== v;
   $$('.topbar nav a[data-view]').forEach(a => a.classList.toggle('active', a.dataset.view === App.view));
+  // моніторинг використовує той самий потік кадрів: сервер перемикає режим з'єднання
+  if (App.view === 'monitor' && prev !== 'monitor') {
+    facesKey = logKey = null;
+    App.frame = null;
+    Stream.send({ cmd: 'monitor', on: true });
+  } else if (prev === 'monitor' && App.view !== 'monitor') {
+    App.frame = null;
+    Stream.send({ cmd: 'monitor', on: false });
+  }
   if (App.view === 'record') refreshRecordings();
   render();
 }
@@ -789,6 +934,11 @@ function bind() {
     if (sel.value === 'pick-file') { sel.value = Cam.deviceId || ''; pickFile(); } else if (sel.value && sel.value !== 'file') Cam.start(sel.value);
   }));
   $('#v-person').addEventListener('input', renderPersonInfo);
+  $('#m-reload').addEventListener('click', () => Stream.send({ cmd: 'monitor', on: true }));
+  $('#m-faces').addEventListener('click', e => {
+    const b = e.target.closest('[data-check]');
+    if (b) checkPerson(b.dataset.check);
+  });
   $('#v-enroll').addEventListener('click', startEnroll);
   $('#v-photo').addEventListener('change', e => { if (e.target.files[0]) enrollPhoto(e.target.files[0]); e.target.value = ''; });
   $('#v-main').addEventListener('click', () => (isActive(App.session) ? cancelSession() : startVerify()));

@@ -5,7 +5,9 @@
 scripts/demo.py (FramePipeline -> SessionManager), і повертає ключові точки,
 стан сеансу, ряди s_ref(t), s_enr(t), ознаки, оцінку і рішення. Записи набору
 даних (форма 4.8) зберігаються лише зашифрованими (pad/storage.py, FR-65) у
-тому самому форматі, що й записи scripts/record_session.py.
+тому самому форматі, що й записи scripts/record_session.py. У режимі моніторингу
+той самий потік кадрів іде на ідентифікацію 1:N (pad/identify.py): кожне обличчя
+кадру порівнюється з еталонами всіх зареєстрованих осіб.
 
 REST:
     GET  /api/config                     параметри модуля, типи викликів, стан ключа
@@ -17,9 +19,12 @@ REST:
     GET  /api/recordings                 записані сеанси і підсумок набору даних
     POST /api/recordings/{name}/review   позначка «розмічено» або «очікує перевірки»
     GET  /api/stats                      FPS, час етапів і затримка рішень
+    GET  /api/monitor                    база еталонів для моніторингу і журнал подій
 WebSocket /ws/stream:
     текст {"cmd": "attach", "session_id": 1} – наступні кадри йдуть у сеанс;
     текст {"cmd": "enroll", "person_id": "P01"} – реєстрація еталона за 30 кадрами;
+    текст {"cmd": "monitor", "on": true} – наступні кадри йдуть на ідентифікацію 1:N
+        (база еталонів перечитується), {"cmd": "monitor", "on": false} – вимкнути;
     двійкове повідомлення – 8 байт часу кадру (float64, little-endian, с) і JPEG.
 """
 
@@ -32,6 +37,7 @@ import re
 import struct
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -48,6 +54,7 @@ from pydantic import BaseModel, Field
 from .app import STATE_TEXT, RunStats, _json_default
 from .classifiers import session_score
 from .features import FEATURE_NAMES
+from .identify import FaceGallery, MonitorSettings
 from .pipeline import enroll_embedding
 from .session import SessionManager, VerificationSession
 from .settings import CHALLENGE_TYPES, PadSettings
@@ -85,6 +92,12 @@ LIGHTING = {"normal": "Нормальне (≈300 лк)", "low": "Слабке (
 
 DECISION_STATES = {"bona_fide", "attack", "failed"}
 
+#: Скільки секунд після останнього кадру з невідомою особою тримати сповіщення (щоб не блимало).
+ALERT_HOLD_S = 2.0
+
+#: Скільки останніх подій журналу моніторингу надсилати з кожним кадром.
+EVENTS_IN_FRAME = 12
+
 
 # ----- запити REST -----
 
@@ -117,6 +130,7 @@ class SessionRequest(BaseModel):
     claimed_person_id: str = ""
     operator_id: str = "operator"
     mode: Literal["verify", "record"] = "verify"
+    origin: Literal["", "monitor"] = ""   # «monitor» – перевірку запущено з вкладки «Моніторинг»
     recording: RecordingMeta | None = None
 
 
@@ -210,15 +224,19 @@ class LiveSession:
     cancelled: bool = False
     decision: dict | None = None
     final_frame_ms: float | None = None
+    origin: str = ""
 
 
 @dataclass
 class StreamConnection:
-    """Стан одного з'єднання WebSocket: прив'язаний сеанс і реєстрація еталона."""
+    """Стан одного з'єднання WebSocket: прив'язаний сеанс, реєстрація еталона або моніторинг."""
 
     session_id: int | None = None
     enroll_id: str | None = None
     enroll_frames: list = field(default_factory=list)
+    monitor: bool = False
+    # моніторинг: для кожної особи (або «unknown») – кадрів поспіль, час останнього кадру, чи є подія
+    presence: dict = field(default_factory=dict)
 
 
 def check_pseudonym(value: str, what: str) -> str:
@@ -279,7 +297,7 @@ class PadService:
     """Спільний стан веб-інтерфейсу: конвеєр, сеанси, еталони, записи."""
 
     def __init__(self, pipeline, manager: SessionManager, data_dir: str | Path,
-                 key: bytes | None = None):
+                 key: bytes | None = None, monitoring: dict | MonitorSettings | None = None):
         self.pipeline = pipeline
         self.manager = manager
         self.data_dir = Path(data_dir)
@@ -289,6 +307,11 @@ class PadService:
         self.memory_enrolled: dict[str, np.ndarray] = {}
         self.sessions: dict[int, LiveSession] = {}
         self.stats = RunStats()
+        self.monitor = (monitoring if isinstance(monitoring, MonitorSettings)
+                        else MonitorSettings.from_dict(monitoring))
+        self.gallery = FaceGallery(self.monitor.threshold)
+        self.gallery_locked: list[str] = []
+        self.events: deque = deque(maxlen=self.monitor.max_events)
         # MediaPipe і SessionManager не розраховані на паралельні виклики: кадри обробляються по одному
         self.lock = threading.RLock()
 
@@ -309,6 +332,7 @@ class PadService:
             "swap_tools": SWAP_TOOLS,
             "lighting": LIGHTING,
             "enroll_frames": ENROLL_FRAMES,
+            "monitoring": {**self.monitor.to_dict(), "backend": self.gallery.backend},
         }
 
     def participants(self) -> list[dict]:
@@ -341,6 +365,7 @@ class PadService:
     def store_embedding(self, person_id: str, emb: np.ndarray) -> str:
         """Зберігає еталон зашифрованим (якщо задано ключ), інакше лише в пам'яті."""
         self.memory_enrolled[person_id] = emb
+        self.gallery.add(person_id, emb)
         if self.key is None:
             return "memory"
         self.enrolled_dir.mkdir(parents=True, exist_ok=True)
@@ -410,7 +435,7 @@ class PadService:
             enrolled, source = self.load_enrolled(claimed)
             s = manager.start_session(claimed, req.operator_id, enrolled)
             code = f"{'VS' if req.mode == 'verify' else 'RS'}-{datetime.now():%Y-%m-%d}-{s.id:04d}"
-            live = LiveSession(manager, s, req.mode, code, source, metadata)
+            live = LiveSession(manager, s, req.mode, code, source, metadata, origin=req.origin)
             if req.mode == "record":
                 stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 name = f"{metadata['participant']}_{metadata['presentation_type']}_{stamp}"
@@ -468,6 +493,9 @@ class PadService:
         self.stats.decisions.append({"session_id": s.id, "decision": dec["decision"], "score": dec["score"],
                                      **latency, "duration_s": dec["explanation"]["duration_s"]})
         log.info("сеанс %s: %s, оцінка %s", live.code, dec["decision"], dec["score"])
+        if live.origin == "monitor":
+            self._event("pad", s.claimed_person_id, None, decision=dec["decision"], score=dec["score"],
+                        code=live.code)
         if live.recorder is not None:
             record = {"metadata": live.metadata, "settings": live.manager.settings.to_dict(),
                       "embedder": getattr(self.pipeline.embedder, "name", "?"), "decision": dec,
@@ -526,7 +554,7 @@ class PadService:
             decision = {**{k: v for k, v in live.decision.items() if k != "explanation"}, "explanation": expl}
 
         return jsonable({
-            "id": s.id, "code": live.code, "mode": live.mode, "state": state,
+            "id": s.id, "code": live.code, "mode": live.mode, "origin": live.origin, "state": state,
             "state_text": STATE_TEXT.get(state, "перервано" if state == "cancelled" else state),
             "claimed_person_id": s.claimed_person_id, "enrolled": live.enrolled_source,
             "status": status, "challenge_duration_s": cur.duration_s if cur is not None else st.duration_s,
@@ -557,6 +585,7 @@ class PadService:
                     return {"type": "error", "message": "сеанс не знайдено"}
                 conn.session_id = live.session.id
                 conn.enroll_id = None
+                conn.monitor = False
                 return {"type": "attached", "session": self.snapshot(live)}
             if cmd == "detach":
                 conn.session_id = None
@@ -570,8 +599,21 @@ class PadService:
                 if live is not None and not live.cancelled and not live.session.state.is_final:
                     return {"type": "error", "message": "під час сеансу реєстрація недоступна"}
                 conn.session_id = None
+                conn.monitor = False
                 conn.enroll_id, conn.enroll_frames = pid, []
                 return {"type": "enroll_started", "person_id": pid, "frames": ENROLL_FRAMES}
+            if cmd == "monitor":
+                if not msg.get("on", True):
+                    conn.monitor = False
+                    return {"type": "monitor_stopped"}
+                live = self.sessions.get(conn.session_id) if conn.session_id else None
+                if live is not None and not live.cancelled and not live.session.state.is_final:
+                    return {"type": "error", "message": "під час сеансу верифікації моніторинг недоступний"}
+                conn.session_id = conn.enroll_id = None
+                conn.enroll_frames, conn.presence = [], {}
+                conn.monitor = True
+                self.reload_gallery()
+                return {"type": "monitor_started", "monitor": self.monitor_status()}
         return {"type": "error", "message": f"невідома команда {cmd!r}"}
 
     def disconnect(self, conn: StreamConnection) -> None:
@@ -585,6 +627,9 @@ class PadService:
         frame = cv2.imdecode(np.frombuffer(payload, np.uint8), cv2.IMREAD_COLOR) if payload else None
         if frame is None:
             return {"type": "frame_error", "message": "кадр не розпізнано (очікується JPEG)"}
+        if conn.monitor:
+            with self.lock:
+                return jsonable(self._monitor_frame(conn, t, frame))
         with self.lock:
             live = self.sessions.get(conn.session_id) if conn.session_id else None
             active = live is not None and not live.cancelled and not live.session.state.is_final
@@ -645,6 +690,99 @@ class PadService:
         stored = self.store_embedding(pid, emb)
         log.info("еталон %s зареєстровано (%s)", pid, stored)
         return {"person_id": pid, "progress": 1.0, "done": True, "ok": True, "stored": stored}
+
+    # ----- моніторинг: ідентифікація 1:N -----
+
+    def reload_gallery(self) -> None:
+        """Перечитує еталони всіх осіб: з пам'яті сервера і з data/enrolled (з ключем)."""
+        items, locked = {}, []
+        for p in self.participants():
+            emb, _ = self.load_enrolled(p["id"])
+            if emb is None:
+                locked.append(p["id"])
+            else:
+                items[p["id"]] = emb
+        self.gallery.replace(items)
+        self.gallery_locked = locked
+        log.info("моніторинг: еталонів %d, не розшифровано %d (%s)", len(self.gallery), len(locked),
+                 self.gallery.backend)
+
+    def monitor_status(self) -> dict:
+        """База еталонів, поріг і журнал подій для вкладки «Моніторинг»."""
+        return jsonable({
+            "threshold": self.gallery.threshold, "backend": self.gallery.backend,
+            "ids": self.gallery.ids, "locked": self.gallery_locked,
+            "key_set": self.key is not None, "settings": self.monitor.to_dict(),
+            "events": list(self.events)[::-1],
+        })
+
+    def _event(self, kind: str, person_id: str | None, similarity: float | None, **extra) -> dict:
+        ev = {"time": datetime.now().strftime("%H:%M:%S"), "kind": kind, "person_id": person_id,
+              "similarity": similarity, **extra}
+        self.events.append(ev)
+        return ev
+
+    def _monitor_frame(self, conn: StreamConnection, t: float, frame: np.ndarray) -> dict:
+        """Кадр моніторингу: усі обличчя, найближчий еталон кожного, журнал і сповіщення.
+
+        Подія «особа з'явилася» потрапляє в журнал, коли особу (або невідоме обличчя)
+        розпізнано confirm_frames кадрів поспіль: окремий кадр з розмитим обличчям
+        не дає хибного сповіщення. Поки особа лишається в кадрі (з пропусками не
+        довшими за event_gap_s), повторна подія не пишеться.
+        """
+        st = self.monitor
+        found, timings = self.pipeline.faces(frame, st.min_det_score, st.max_faces)
+        tm = time.perf_counter()
+        matches = self.gallery.search(np.stack([e for _, e in found])) if found else []
+        timings["search_ms"] = (time.perf_counter() - tm) * 1000
+        timings["total_ms"] += timings["search_ms"]
+        self.stats.add(timings, None)
+
+        faces, seen = [], {}
+        for (box, _), m in zip(found, matches):
+            faces.append({"box": [float(v) for v in box.bbox], "det_score": float(box.score),
+                          "person_id": m.person_id, "similarity": m.similarity, "known": m.known,
+                          "nearest": m.nearest})
+            key = m.person_id or "unknown"
+            sim = m.similarity if math.isfinite(m.similarity) else None
+            if key not in seen or (sim is not None and (seen[key] is None or sim > seen[key])):
+                seen[key] = sim
+
+        for key, entry in list(conn.presence.items()):
+            if key not in seen:
+                entry["streak"] = 0
+                if t - entry["last"] > st.event_gap_s:
+                    del conn.presence[key]
+        for key, sim in seen.items():
+            entry = conn.presence.get(key)
+            if entry is None or t - entry["last"] > st.event_gap_s:
+                entry = conn.presence[key] = {"streak": 0, "last": t, "logged": False}
+            entry["streak"] += 1
+            entry["last"] = t
+            if entry["streak"] >= st.confirm_frames and not entry["logged"]:
+                entry["logged"] = True
+                known = key != "unknown"
+                self._event("known" if known else "unknown", key if known else None, sim)
+                if not known:
+                    log.warning("моніторинг: невідома особа, подібність %s", sim)
+
+        unknown = conn.presence.get("unknown")
+        alert = None
+        if unknown is not None:
+            if "unknown" in seen:
+                unknown["count"] = sum(not f["known"] for f in faces)
+                unknown["similarity"] = seen["unknown"]
+            if unknown["logged"] and t - unknown["last"] <= ALERT_HOLD_S:
+                alert = {"count": unknown["count"], "similarity": unknown["similarity"]}
+        h, w = frame.shape[:2]
+        return {"type": "frame", "t": t, "size": [w, h], "face": None, "hand": None, "box": None,
+                "timings": {k: round(v, 1) for k, v in timings.items()},
+                "fps": round(self.stats.fps(), 1), "pad_ms": None,
+                "check": {"face_points": 0, "hand_points": 0, "yaw": None, "pitch": None,
+                          "det_score": faces[0]["det_score"] if faces else 0.0, "embedding": bool(faces)},
+                "monitor": {"faces": faces, "alert": alert, "threshold": self.gallery.threshold,
+                            "gallery": len(self.gallery),
+                            "events": list(self.events)[-EVENTS_IN_FRAME:][::-1]}}
 
     # ----- записи набору даних -----
 
@@ -773,6 +911,11 @@ def create_app(service: PadService) -> FastAPI:
     def get_stats():
         with service.lock:
             return jsonable(service.stats.summary()) if service.stats.frames else {"frames": 0}
+
+    @app.get("/api/monitor")
+    def get_monitor():
+        with service.lock:
+            return service.monitor_status()
 
     @app.websocket("/ws/stream")
     async def stream(ws: WebSocket):

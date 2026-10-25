@@ -50,7 +50,7 @@ def main() -> int:
     cfg = load_config(args.config)
     pipeline, manager = build_runtime(cfg, args.classifier)
     pipeline.warmup()
-    app = create_app(PadService(pipeline, manager, args.data, key))
+    app = create_app(PadService(pipeline, manager, args.data, key, cfg.get("monitoring")))
     print(f"відкрийте http://{args.host}:{args.port}/ у Chrome або Edge")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return 0

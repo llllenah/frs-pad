@@ -79,6 +79,23 @@ class FramePipeline:
         return FrameData(t=t, embedding=embedding, det_score=score, face=face, hand=hand,
                          size=(w, h)), timings
 
+    def faces(self, frame_bgr: np.ndarray, min_score: float = 0.9,
+              max_faces: int = 5) -> tuple[list[tuple[FaceBox, np.ndarray]], dict]:
+        """Усі обличчя кадру з ембедингами (для моніторингу) і час етапів у мілісекундах.
+
+        Face Mesh і Hands тут не потрібні: кожне обличчя вирівнюється за 5 точками
+        детектора. Беруться max_faces найбільших облич з упевненістю >= min_score.
+        """
+        t0 = time.perf_counter()
+        boxes = [f for f in self.detector.detect(frame_bgr) if f.score >= min_score]
+        boxes = sorted(boxes, key=lambda f: f.bbox[2] * f.bbox[3], reverse=True)[:max_faces]
+        t1 = time.perf_counter()
+        result = [(b, self.embedder.embed(align_face(frame_bgr, b.landmarks5, self.embedder.input_size)))
+                  for b in boxes]
+        t2 = time.perf_counter()
+        return result, {"detect_ms": (t1 - t0) * 1000, "landmarks_ms": 0.0, "embed_ms": (t2 - t1) * 1000,
+                        "total_ms": (t2 - t0) * 1000}
+
     def embed_image(self, image_bgr: np.ndarray) -> np.ndarray | None:
         """Ембединг обличчя з фотографії (наприклад, цільового обличчя для атаки) або None.
 

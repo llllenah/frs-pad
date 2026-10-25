@@ -11,7 +11,7 @@
   <div class="brand"><span class="logo"></span><span class="name">FRS Platform</span></div>
   <nav>
     <a class="off" title="Конвеєр розпізнавання – поза межами курсової роботи">Дашборд</a>
-    <a class="off" title="Конвеєр розпізнавання – поза межами курсової роботи">Моніторинг</a>
+    <a href="#/monitor" data-view="monitor">Моніторинг</a>
     <a href="#/verify" data-view="verify">Верифікація</a>
     <a class="off" title="Конвеєр розпізнавання – поза межами курсової роботи">База осіб</a>
     <a href="#/record" data-view="record">Дослідження</a>
@@ -20,6 +20,74 @@
   <div class="live" id="live">● OFFLINE</div>
   <div class="avatar"></div>
 </header>
+
+<!-- Моніторинг: ідентифікація 1:N у потоці камери, перехід до верифікації з викликами -->
+<main id="view-monitor" class="view monitor" hidden>
+  <aside class="side">
+    <h3 class="cap">База еталонів</h3>
+    <div class="card">
+      <div class="cap small">Зареєстровано осіб</div>
+      <div class="big-num" id="m-count">–</div>
+      <div class="muted" id="m-locked"></div>
+      <ul class="ids" id="m-ids"></ul>
+      <div class="row">
+        <button class="btn sm" id="m-reload" title="Перечитати data/enrolled і еталони в пам'яті сервера">Оновити</button>
+        <a class="btn sm" href="#/verify" title="Реєстрація еталона – на вкладці «Верифікація»">Зареєструвати</a>
+      </div>
+    </div>
+    <h3 class="cap">Розпізнавання</h3>
+    <dl class="kv">
+      <dt>Поріг подібності</dt><dd id="m-threshold">–</dd>
+      <dt>Пошук</dt><dd id="m-backend">–</dd>
+      <dt>Ембединг</dt><dd id="m-embedder">–</dd>
+    </dl>
+    <p class="hint" style="margin-top:14px">Зелена рамка – особу знайдено в базі (подібність не менша за поріг),
+      червона – невідома особа. Кнопка «Перевірити» запускає сеанс з активними викликами для цієї особи.</p>
+    <div class="note">Прототип інтерфейсу · курсова робота</div>
+  </aside>
+
+  <section class="center">
+    <div class="videobar">
+      <span class="cam-label" id="m-cam">● камеру не ввімкнено</span>
+      <select class="source-select" title="Джерело відео"></select>
+      <span class="spacer"></span>
+      <span class="mono" id="m-fps">FPS – · – мс</span>
+    </div>
+    <div class="stage" id="m-stage">
+      <canvas class="frame" id="m-canvas"></canvas>
+      <div class="alert" id="m-alert" hidden>
+        <b>НЕВІДОМА ОСОБА</b>
+        <span id="m-alert-sub">обличчя немає в базі еталонів</span>
+      </div>
+      <div class="placeholder" id="m-placeholder">
+        <div>Кожне обличчя в кадрі порівнюється з еталонами всіх зареєстрованих осіб.</div>
+        <div class="row">
+          <button class="btn cam-on">Увімкнути камеру</button>
+          <label class="btn file-btn">Відеофайл<input class="video-file" type="file" accept="video/*"></label>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <aside class="right">
+    <h3 class="cap">Обличчя в кадрі</h3>
+    <ul class="faces" id="m-faces"><li class="empty">облич не виявлено</li></ul>
+    <div class="card">
+      <h4>Журнал подій</h4>
+      <table class="log" id="m-log">
+        <thead><tr><th>Час</th><th>Особа</th><th>Подібність</th></tr></thead>
+        <tbody><tr class="empty"><td colspan="3">подій ще немає</td></tr></tbody>
+      </table>
+    </div>
+    <div class="card perf">
+      <h4>Швидкодія</h4>
+      <dl class="kv">
+        <dt>Детекція / ембединги</dt><dd id="m-p-det">–</dd>
+        <dt>Пошук у базі</dt><dd id="m-p-search">–</dd>
+      </dl>
+    </div>
+  </aside>
+</main>
 
 <!-- Рисунок 4.7 – Екранна форма сеансу верифікації з активними викликами -->
 <main id="view-verify" class="view verify">
@@ -38,6 +106,7 @@
       <div class="cap small">Сеанс</div>
       <div class="mono" id="v-code">–</div>
       <div class="muted" id="v-state">сеанс не розпочато</div>
+      <a class="btn sm back" id="v-back" href="#/monitor" hidden>← До моніторингу</a>
     </div>
 
     <h3 class="cap">Виклики (випадкові)</h3>

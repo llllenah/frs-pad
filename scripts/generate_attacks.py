@@ -54,7 +54,7 @@ def largest_face(detector: MTCNN, frame: np.ndarray):
     faces = [f for f in detector.detect(frame) if f.score >= MIN_SCORE]
     if not faces:
         return None
-    return max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+    return max(faces, key=lambda f: f.bbox[2] * f.bbox[3])  # рамка (x, y, w, h)
 
 
 def source_embedding(arcface: ArcFace, detector: MTCNN, image: Path | None = None,
