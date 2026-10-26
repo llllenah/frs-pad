@@ -329,8 +329,9 @@ details summary { cursor: pointer; color: var(--muted); font-size: 13.5px; margi
 }
 .sound:hover { border-color: #aaa; color: #fff; }
 .sound.off { color: #8a8a8a; border-style: dashed; }
+/* вікна тривог – у правому нижньому куті, щоб не закривати відео і напис «НЕВІДОМА ОСОБА» */
 .popups {
-  position: fixed; top: 78px; left: 50%; transform: translateX(-50%); width: min(640px, calc(100vw - 32px));
+  position: fixed; bottom: 20px; right: 20px; width: min(560px, calc(100vw - 32px));
   display: grid; gap: 8px; z-index: 30; pointer-events: none;
 }
 .popup {
