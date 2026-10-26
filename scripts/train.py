@@ -34,21 +34,28 @@ import yaml  # noqa: E402
 from pad.classifiers import LogisticClassifier, ThresholdClassifier  # noqa: E402
 from pad.cli import setup_console  # noqa: E402
 from pad.dataset import read_csv, to_arrays, write_csv  # noqa: E402
+from pad.features import FEATURE_NAMES  # noqa: E402
 from pad.metrics import evaluate, rates_from_decisions, threshold_for_bpcer  # noqa: E402
 from pad.synthetic import make_synthetic_dataset  # noqa: E402
 
 MODELS = {
-    "threshold": lambda cfg: ThresholdClassifier(cfg.get("threshold_feature", "s_ref_during_min")),
-    "logistic": lambda cfg: LogisticClassifier(C=cfg.get("C", 1.0), seed=cfg.get("seed", 0)),
+    "threshold": lambda cfg: ThresholdClassifier(cfg.get("threshold_feature", "s_ref_during_min"),
+                                                 names=cfg.get("names")),
+    "logistic": lambda cfg: LogisticClassifier(C=cfg.get("C", 1.0), seed=cfg.get("seed", 0),
+                                               names=cfg.get("names")),
 }
 
 
+AGGREGATE = "max"   # оцінка сеансу з оцінок викликів: max (як у ПЗ) або mean (config: aggregate)
+
+
 def session_scores(challenge_scores: np.ndarray, sessions: np.ndarray) -> dict[str, float]:
-    """Оцінка сеансу – максимум оцінок його викликів."""
-    out: dict[str, float] = {}
+    """Оцінка сеансу – максимум (або середнє, aggregate: mean) оцінок його викликів."""
+    groups: dict[str, list[float]] = {}
     for s, p in zip(sessions, challenge_scores):
-        out[s] = max(out.get(s, -np.inf), float(p))
-    return out
+        groups.setdefault(s, []).append(float(p))
+    agg = np.mean if AGGREGATE == "mean" else np.max
+    return {s: float(agg(v)) for s, v in groups.items()}
 
 
 def session_table(data: dict) -> dict[str, dict]:
@@ -211,6 +218,15 @@ def main() -> int:
           f"учасників {n_subj}")
 
     model_cfg = {**cfg.get("model", {}), "seed": seed, "target_bpcer": cfg.get("target_bpcer", 0.05)}
+    global AGGREGATE
+    AGGREGATE = cfg.get("aggregate", "max")
+    if cfg.get("features"):
+        # підмножина ознак за префіксами, наприклад [s_ref_] – лише дрейф відносно еталона сеансу,
+        # без порівняння з еталоном заявленої особи (s_enr), який перевіряє розпізнавання облич
+        names = [n for n in FEATURE_NAMES if n.startswith(tuple(cfg["features"]))]
+        data["X"] = data["X"][:, [FEATURE_NAMES.index(n) for n in names]]
+        model_cfg["names"] = names
+        print(f"ознаки: {len(names)} з {len(FEATURE_NAMES)} ({', '.join(cfg['features'])})")
     results = {name: loso(data, name, model_cfg) for name in cfg.get("models", ["threshold", "logistic"])}
 
     # підсумкові моделі на всіх даних; рекомендований поріг – за LOSO-оцінками сеансів

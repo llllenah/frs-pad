@@ -13,3 +13,10 @@ runs/*
 !runs/lfw_*.json
 models/swap/
 dist/
+!runs/pilot_*/
+runs/pilot_*/*
+!runs/pilot_*/metrics.json
+!runs/pilot_*/folds.csv
+!runs/pilot_*/config.yaml
+!runs/pilot_*/cfg_*.yaml
+!runs/pilot_report/summary.json

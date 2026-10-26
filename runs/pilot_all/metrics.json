@@ -1,0 +1,177 @@
+{
+  "source": "data/features.csv",
+  "seed": 42,
+  "config": {
+    "protocol": "intra_tool",
+    "seed": 42,
+    "split": "leave-one-subject-out",
+    "models": [
+      "threshold",
+      "logistic"
+    ],
+    "model": {
+      "C": 1.0,
+      "threshold_feature": "s_ref_during_min"
+    },
+    "target_bpcer": 0.05,
+    "synthetic": {
+      "n_subjects": 6,
+      "sessions_per_class": 8
+    }
+  },
+  "split": "leave-one-subject-out",
+  "split_hash": "c738ac34ed294bbc",
+  "subjects": [
+    "P01",
+    "P02",
+    "P03",
+    "P04"
+  ],
+  "metrics": {
+    "threshold": {
+      "session": {
+        "operating_point": {
+          "apcer": 1.0,
+          "apcer_per_species": {
+            "deep_live_cam": 1.0
+          },
+          "bpcer": 0.0,
+          "acer": 0.5,
+          "note": "порогу τ кожного фолду відповідає BPCER <= 0.05 на валідації"
+        },
+        "bpcer20": 1.0,
+        "eer": 0.5,
+        "auc": 0.5025951557093425,
+        "n_bona_fide": 34,
+        "n_attack": 34
+      },
+      "challenge": {
+        "eer": 0.5194805194805194,
+        "auc": 0.47607187333214734,
+        "bpcer20": 0.987012987012987
+      },
+      "per_challenge_type": {
+        "cover_left": {
+          "eer": 0.4444444444444444,
+          "auc": 0.6068376068376068,
+          "n": 22
+        },
+        "cover_mouth": {
+          "eer": 0.5,
+          "auc": 0.45714285714285713,
+          "n": 41
+        },
+        "cover_right": {
+          "eer": 0.5384615384615384,
+          "auc": 0.44505494505494503,
+          "n": 27
+        },
+        "hand_swipe": {
+          "eer": 0.625,
+          "auc": 0.4375,
+          "n": 16
+        },
+        "turn_head": {
+          "eer": 0.6818181818181819,
+          "auc": 0.2975206611570248,
+          "n": 44
+        }
+      }
+    },
+    "logistic": {
+      "session": {
+        "operating_point": {
+          "apcer": 0.08823529411764706,
+          "apcer_per_species": {
+            "deep_live_cam": 0.08823529411764706
+          },
+          "bpcer": 0.058823529411764705,
+          "acer": 0.07352941176470588,
+          "note": "порогу τ кожного фолду відповідає BPCER <= 0.05 на валідації"
+        },
+        "bpcer20": 0.0,
+        "eer": 0.0,
+        "auc": 1.0,
+        "n_bona_fide": 34,
+        "n_attack": 34
+      },
+      "challenge": {
+        "eer": 0.0,
+        "auc": 1.0,
+        "bpcer20": 0.0
+      },
+      "per_challenge_type": {
+        "cover_left": {
+          "eer": 0.0,
+          "auc": 1.0,
+          "n": 22
+        },
+        "cover_mouth": {
+          "eer": 0.0,
+          "auc": 1.0,
+          "n": 41
+        },
+        "cover_right": {
+          "eer": 0.0,
+          "auc": 1.0,
+          "n": 27
+        },
+        "hand_swipe": {
+          "eer": 0.0,
+          "auc": 1.0,
+          "n": 16
+        },
+        "turn_head": {
+          "eer": 0.0,
+          "auc": 1.0,
+          "n": 44
+        }
+      }
+    }
+  },
+  "final_models": {
+    "threshold": {
+      "path": "runs\\pilot_all\\model_threshold.json",
+      "recommended_threshold": 0.9999999993389019
+    },
+    "logistic": {
+      "path": "runs\\pilot_all\\model_logistic.json",
+      "recommended_threshold": 0.41064304351420206,
+      "onnx": "runs\\pilot_all\\model_logistic.onnx",
+      "top_features": [
+        [
+          "s_enr_before_mean",
+          -2.163251937308133
+        ],
+        [
+          "s_ref_before_mean",
+          1.7801845405659469
+        ],
+        [
+          "s_enr_after_mean",
+          -1.5157461075753196
+        ],
+        [
+          "s_ref_during_mean",
+          1.289404327767049
+        ],
+        [
+          "s_enr_during_mean",
+          -1.255230368232283
+        ],
+        [
+          "s_ref_after_mean",
+          0.9829982296487242
+        ],
+        [
+          "s_enr_during_var",
+          -0.6803666000966823
+        ],
+        [
+          "s_enr_before_min",
+          -0.5262018392289902
+        ]
+      ]
+    }
+  }
+}

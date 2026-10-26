@@ -1,0 +1,12 @@
+# Той самий експеримент, але лише на 13 ознаках s_ref (дрейф відносно еталона сеансу).
+# Показує, що виявляє саме модуль викликів, а не розпізнавання облич (ознаки s_enr).
+protocol: intra_tool
+seed: 42
+aggregate: mean
+split: leave-one-subject-out
+models: [threshold, logistic]
+features: [s_ref_]
+model:
+  C: 1.0
+  threshold_feature: s_ref_during_min
+target_bpcer: 0.05
