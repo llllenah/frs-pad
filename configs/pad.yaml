@@ -2,7 +2,8 @@
 # Шляхи задано відносно кореня проєкту frs-pad.
 
 pad:
-  challenge_types: [cover_left, cover_right, cover_mouth, turn_head, hand_swipe]
+  # «провести рукою» прибрано за результатами пілоту: виконано лише 8 з 23 (кисть розмивається в русі)
+  challenge_types: [cover_left, cover_right, cover_mouth, turn_head]
   challenge_count: 3        # 2–5
   duration_s: 5.0           # 3–5 с
   threshold: 0.5            # поріг рішення τ у [0; 1]; після навчання – recommended_threshold

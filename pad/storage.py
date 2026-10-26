@@ -117,6 +117,49 @@ def read_encrypted(path: str | Path, key: bytes | None = None) -> bytes:
         raise DecryptionError(f"{path}: {exc}") from exc
 
 
+def read_encrypted_buffer(path: str | Path, key: bytes | None = None, chunk: int = 16 << 20) -> bytearray:
+    """Вміст великого зашифрованого файлу (відео) у пам'яті, без проміжної копії шифротексту.
+
+    Файл читається частинами по chunk байт і розшифровується потоково в заздалегідь
+    виділений буфер; тег GCM перевіряється в кінці (finalize). До перевірки тегу
+    буфер нікуди не передається, тому підмінене відео не потрапить до декодера.
+    """
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    path = Path(path)
+    key = key or load_key()
+    head = len(MAGIC) + NONCE_SIZE
+    size = path.stat().st_size
+    if size < head + 16:
+        raise DecryptionError(f"{path}: це не зашифрований запис FRS PAD")
+    n = size - head - 16
+    with open(path, "rb") as fh:
+        if fh.read(len(MAGIC)) != MAGIC:
+            raise DecryptionError(f"{path}: це не зашифрований запис FRS PAD")
+        nonce = fh.read(NONCE_SIZE)
+        fh.seek(size - 16)
+        tag = fh.read(16)
+        fh.seek(head)
+        dec = Cipher(algorithms.AES(key), modes.GCM(nonce, tag)).decryptor()
+        dec.authenticate_additional_data(plain_name(path).encode("utf-8"))
+        buf = bytearray(n + 16)
+        view = memoryview(buf)
+        pos = 0
+        try:
+            while pos < n:
+                part = fh.read(min(chunk, n - pos))
+                if not part:
+                    raise DecryptionError(f"{path}: файл обрізано")
+                pos += dec.update_into(part, view[pos:pos + len(part) + 15])
+            dec.finalize()
+        except InvalidTag as exc:
+            raise DecryptionError(f"{path}: неправильний ключ або файл пошкоджено чи перейменовано") from exc
+        finally:
+            view.release()
+    del buf[pos:]
+    return buf
+
+
 def decrypt_file(path: str | Path, out: str | Path | None = None, key: bytes | None = None) -> Path:
     """Розшифровує path (.enc) у файл out (за замовчуванням – поруч, без .enc)."""
     path = Path(path)

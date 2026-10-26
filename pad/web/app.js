@@ -37,11 +37,229 @@ const SIDE_TEXT = { left: 'ліва', right: 'права', center: 'центр' 
 const LIGHT_SHORT = { normal: 'норм.', low: 'слабке', bright: 'яскраве', backlight: 'контрове' };
 // Рамки моніторингу: відома особа – зелена, невідома – червона (єдині кольорові елементи інтерфейсу).
 const KNOWN_COLOR = '#16a34a', UNKNOWN_COLOR = '#dc2626';
+const FAIL_REASON = {
+  timeout: 'перевищено тривалість сеансу', no_face: 'обличчя не виявлено', not_performed: 'виклики не виконано',
+  error: 'збій модуля',
+};
+const LEVEL_TEXT = { alarm: 'тривога', warn: 'не пройдено', ok: 'підтверджено', info: 'у базі' };
 
 const App = {
   config: null, participants: [], view: 'verify',
   session: null, frame: null, enroll: null, recordings: null, monitor: null,
+  incidents: [], lastEventId: null, lastHash: '#/verify',
 };
+
+// ----- звукові сповіщення (WebAudio, без зовнішніх файлів) -----
+
+const Sound = {
+  ctx: null, on: true,
+  // тривога – чотири різкі сигнали, «не пройдено» – два нижчі, справжнє подання – тихий дзвін
+  PATTERNS: {
+    alarm: [[880, 0, 0.16, 'square'], [660, 0.2, 0.16, 'square'], [880, 0.4, 0.16, 'square'], [660, 0.6, 0.16, 'square']],
+    warn: [[520, 0, 0.22, 'triangle'], [415, 0.3, 0.3, 'triangle']],
+    ok: [[660, 0, 0.14, 'sine'], [990, 0.15, 0.3, 'sine']],
+  },
+
+  init() {
+    try { this.on = localStorage.getItem('frs-sound') !== 'off'; } catch (_) { /* сховище недоступне */ }
+    // браузер дозволяє звук лише після дії користувача, тому контекст створюється на першому кліку
+    const unlock = () => this.context();
+    document.addEventListener('pointerdown', unlock, { once: true });
+    document.addEventListener('keydown', unlock, { once: true });
+    this.button();
+  },
+  context() {
+    if (!this.ctx) {
+      try { this.ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) { return null; }
+    }
+    if (this.ctx.state === 'suspended') this.ctx.resume();
+    return this.ctx;
+  },
+  toggle() {
+    this.on = !this.on;
+    try { localStorage.setItem('frs-sound', this.on ? 'on' : 'off'); } catch (_) { /* лише на цей сеанс */ }
+    this.button();
+    if (this.on) this.play('ok');
+  },
+  button() {
+    const b = $('#sound');
+    b.textContent = this.on ? 'Звук: увімк.' : 'Звук: вимк.';
+    b.classList.toggle('off', !this.on);
+    b.setAttribute('aria-pressed', String(this.on));
+  },
+  play(kind) {
+    if (!this.on) return;
+    const ctx = this.context();
+    if (!ctx) return;
+    const t0 = ctx.currentTime + 0.02;
+    const peak = kind === 'alarm' ? 0.08 : 0.12;
+    for (const [f, at, dur, type] of this.PATTERNS[kind] || []) {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = type;
+      o.frequency.value = f;
+      g.gain.setValueAtTime(0.0001, t0 + at);
+      g.gain.exponentialRampToValueAtTime(peak, t0 + at + 0.015);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + at + dur);
+      o.connect(g).connect(ctx.destination);
+      o.start(t0 + at);
+      o.stop(t0 + at + dur + 0.03);
+    }
+  },
+};
+
+// ----- журнал інцидентів і сповіщення охоронця -----
+
+// Текст події для журналу, сповіщення і вікна подробиць.
+function incidentView(e) {
+  if (e.kind === 'unknown') {
+    return { title: 'Невідома особа', head: 'ТРИВОГА · НЕВІДОМА ОСОБА',
+      sub: e.similarity != null ? `подібність ${fmt(e.similarity)} – обличчя немає в базі` : 'база еталонів порожня' };
+  }
+  if (e.kind === 'known') return { title: `${e.person_id} – особа з бази`, head: '', sub: `подібність ${fmt(e.similarity)}` };
+  const who = e.person_id;
+  if (e.decision === 'attack') {
+    return { title: `${who} – атака підміни обличчя`, head: 'ТРИВОГА · АТАКА ПІДМІНИ ОБЛИЧЧЯ',
+      sub: `обличчя схоже на ${who}, але перевірка викликами виявила підміну · оцінка ${fmt(e.score)}` };
+  }
+  if (e.decision === 'failed') {
+    return { title: `${who} – перевірку не пройдено`, head: 'ПЕРЕВІРКУ НЕ ПРОЙДЕНО',
+      sub: `${FAIL_REASON[e.reason] || 'виклики не виконано'} · особу не підтверджено` };
+  }
+  return { title: `${who} – справжнє подання`, head: 'ПЕРЕВІРКУ ПРОЙДЕНО',
+    sub: `виклики виконано, ознак підміни немає · оцінка ${fmt(e.score)}` };
+}
+
+const snapshotUrl = e => `/api/incidents/${e.id}/snapshot.jpg`;
+// Знімок міг зникнути з пам'яті сервера (перезапуск, понад 50 знімків) – тоді показується порожня рамка.
+const thumb = (e, cls = '') => e.snapshot
+  ? `<img class="${cls}" src="${snapshotUrl(e)}" alt="" onerror="this.outerHTML='<span class=&quot;noimg&quot;></span>'">`
+  : `<span class="noimg ${cls}"></span>`;
+
+// Нові події з сервера: оновлює журнал і показує сповіщення лише для подій, яких ще не було.
+// Повтори не надходять: сервер пише подію, коли особу підтверджено кілька кадрів поспіль,
+// і повторює її лише після перерви (журнал моніторингу з уже наявним усуненням дублікатів).
+function ingestEvents(events, silent = false) {
+  if (!events) return;
+  const byId = new Map(App.incidents.map(e => [e.id, e]));
+  for (const e of events) byId.set(e.id, e);
+  App.incidents = [...byId.values()].sort((a, b) => b.id - a.id).slice(0, 100);
+  const maxId = App.incidents.length ? App.incidents[0].id : 0;
+  if (App.lastEventId == null || silent) {
+    App.lastEventId = maxId;
+    return;
+  }
+  const fresh = events.filter(e => e.id > App.lastEventId).sort((a, b) => a.id - b.id);
+  App.lastEventId = Math.max(App.lastEventId, maxId);
+  for (const e of fresh) if (e.level !== 'info') Popups.show(e);
+}
+
+async function refreshIncidents(silent = false) {
+  try { ingestEvents(await api('/api/incidents'), silent); } catch (_) { /* сервер недоступний */ }
+  render();
+}
+
+const Popups = {
+  show(e) {
+    const v = incidentView(e);
+    const box = $('#popups');
+    const el = document.createElement('div');
+    el.className = `popup ${e.level}`;
+    el.setAttribute('role', e.level === 'ok' ? 'status' : 'alert');
+    const action = e.review
+      ? `<button class="btn sm" data-act="review">Переглянути сеанс</button>`
+      : `<button class="btn sm" data-act="details">Деталі</button>`;
+    el.innerHTML = `${thumb(e)}
+      <div class="txt"><b>${esc(v.head)}</b><span>${esc(e.kind === 'unknown' ? 'Обличчя в кадрі не знайдено в базі еталонів' : v.title)}</span>
+        <small>${esc(e.time)} · ${esc(v.sub)}</small></div>
+      <div class="acts">${action}<button class="btn sm" data-act="close">${e.level === 'ok' ? 'Закрити' : 'Прийнято'}</button></div>`;
+    el.addEventListener('click', ev => {
+      const act = ev.target.closest('[data-act]');
+      if (!act) return;
+      el.remove();
+      if (act.dataset.act === 'review') location.hash = `#/review/${encodeURIComponent(e.review)}`;
+      else if (act.dataset.act === 'details') openIncident(e.id);
+    });
+    box.prepend(el);
+    while (box.children.length > 3) box.lastElementChild.remove();
+    if (e.level === 'ok') setTimeout(() => el.remove(), 8000);
+    Sound.play(e.level);
+  },
+};
+
+function openIncident(id) {
+  const e = App.incidents.find(x => x.id === id);
+  if (!e) return;
+  const v = incidentView(e);
+  $('#inc-title').textContent = v.title;
+  $('#inc-photo').innerHTML = e.snapshot ? `<img src="${snapshotUrl(e)}" alt="Знімок обличчя">`
+    : '<div class="noimg">знімка немає<br><small>зберігаються лише останні 50 і лише до перезапуску сервера</small></div>';
+  const rows = [['Час', `${e.date || ''} ${e.time}`.trim()]];
+  if (e.kind === 'pad') {
+    rows.push(['Подія', 'перевірка активними викликами'], ['Заявлена особа', e.person_id],
+      ['Рішення', DECISION_TEXT[e.decision] ? DECISION_TEXT[e.decision].toLowerCase() : e.decision],
+      ['Оцінка атаки', fmt(e.score)], ['Сеанс', e.code], ['Запущено з', e.origin === 'monitor' ? 'моніторингу' : 'вкладки «Верифікація»']);
+    if (e.decision === 'failed') rows.push(['Причина', FAIL_REASON[e.reason] || '–']);
+  } else {
+    rows.push(['Подія', e.kind === 'unknown' ? 'невідома особа в кадрі' : 'відома особа в кадрі'],
+      ['Особа', e.kind === 'unknown' ? 'невідома' : e.person_id], ['Подібність', fmt(e.similarity)]);
+    if (e.kind === 'unknown' && e.nearest) rows.push(['Найближчий еталон', e.nearest]);
+  }
+  rows.push(['Рівень', LEVEL_TEXT[e.level] || '–']);
+  $('#inc-info').innerHTML = rows.map(([k, x]) => `<dt>${esc(k)}</dt><dd>${esc(x)}</dd>`).join('');
+  let foot = '';
+  if (e.review) foot = `<button class="btn primary" data-review-open="${esc(e.review)}">Переглянути сеанс</button>`;
+  else if (e.kind === 'pad') foot = '<span class="muted">кадри сеансу вже видалено з пам\'яті сервера (зберігаються 5 останніх)</span>';
+  else foot = '<span class="muted">відео моніторингу не записується, зберігається лише знімок у пам\'яті сервера</span>';
+  $('#inc-foot').innerHTML = foot;
+  $('#incident').hidden = false;
+  $('#inc-close').focus();
+}
+
+function closeIncident() { $('#incident').hidden = true; }
+
+// Журнал у вкладці «Моніторинг»: рядки перебудовуються лише для нових або змінених подій,
+// щоб знімки не завантажувалися щоразу заново.
+const incNodes = new Map();
+function incidentRow(e) {
+  const v = incidentView(e);
+  const li = document.createElement('li');
+  li.className = `inc ${e.level}`;
+  li.dataset.inc = e.id;
+  li.tabIndex = 0;
+  // у вузькій колонці – коротко: хто, час і число; результат перевірки – на позначці праворуч
+  const value = e.kind === 'pad' ? (e.score != null ? `оцінка ${fmt(e.score)}` : FAIL_REASON[e.reason] || '')
+    : `подібність ${fmt(e.similarity)}`;
+  const title = e.kind === 'unknown' ? v.title : e.kind === 'known' ? e.person_id : `${e.person_id} – перевірка`;
+  const badge = e.kind === 'pad' ? { attack: 'атака', failed: 'не пройдено', bona_fide: 'пройдено' }[e.decision] || e.decision
+    : LEVEL_TEXT[e.level];
+  li.title = `${v.title} · ${v.sub}`;
+  li.innerHTML = `${thumb(e)}<div class="txt"><b>${esc(title)}</b><small>${esc(e.time)} · ${esc(value)}</small></div>
+    <span class="lvl">${esc(badge)}</span>`;
+  return li;
+}
+
+function renderIncidents() {
+  const ul = $('#m-incidents');
+  const only = $('#m-only-alarms').checked;
+  const list = App.incidents.filter(e => !only || e.level !== 'info').slice(0, 40);
+  if (!list.length) {
+    ul.innerHTML = `<li class="empty">${only ? 'тривог ще немає' : 'подій ще немає'}</li>`;
+    return;
+  }
+  const want = list.map(e => {
+    const sig = `${e.id}|${e.review || ''}|${e.snapshot}`;
+    let li = incNodes.get(e.id);
+    if (!li || li.dataset.sig !== sig) {
+      li = incidentRow(e);
+      li.dataset.sig = sig;
+      incNodes.set(e.id, li);
+    }
+    return li;
+  });
+  const kids = ul.children;
+  if (want.length !== kids.length || want.some((li, i) => kids[i] !== li)) ul.replaceChildren(...want);
+  for (const id of incNodes.keys()) if (!App.incidents.some(e => e.id === id)) incNodes.delete(id);
+}
 
 // ----- службові -----
 
@@ -165,6 +383,7 @@ const Stream = {
       this.open = true;
       this.inflight = false;
       setLive();
+      refreshIncidents(true);   // після перепідключення старі події не сповіщаються ще раз
       if (App.view === 'monitor') this.send({ cmd: 'monitor', on: true });
       schedule();
     };
@@ -209,7 +428,8 @@ function schedule() {
 
 async function sendFrame() {
   scheduled = false;
-  if (!Cam.active || !Stream.open || Stream.inflight) return;
+  // під час перегляду запису кадри камери не надсилаються: сервер не витрачає час на обробку
+  if (!Cam.active || !Stream.open || Stream.inflight || App.view === 'review') return;
   const v = Cam.video;
   if (v.readyState < 2 || !v.videoWidth) { schedule(); return; }
   const scale = Math.min(1, 1280 / v.videoWidth);
@@ -235,6 +455,7 @@ function onMessage(m) {
     App.frame = m;
     if (m.session) setSession(m.session);
     if (m.enroll) onEnroll(m.enroll);
+    if (m.monitor) ingestEvents(m.monitor.events);
     render();
     schedule();
   } else if (m.type === 'frame_error') {
@@ -249,6 +470,7 @@ function onMessage(m) {
   } else if (m.type === 'monitor_started') {
     App.monitor = m.monitor;
     App.frame = null;
+    ingestEvents(m.monitor.events);
     render();
   } else if (m.type === 'error') {
     toast(m.message, 'err');
@@ -269,8 +491,8 @@ function sessionFinished(s) {
     else toast(`Запис збережено (AES-256-GCM): ${s.record_name}`);
     refreshRecordings();
   } else if (s.decision) {
-    const back = s.origin === 'monitor' ? ' · результат записано в журнал моніторингу' : '';
-    toast(`Рішення: ${DECISION_TEXT[s.decision.decision].toLowerCase()}${back}`);
+    // результат перевірки потрапляє в журнал інцидентів, звідти ж – сповіщення зі звуком
+    refreshIncidents();
   }
 }
 
@@ -308,7 +530,7 @@ function startVerify() {
 async function checkPerson(pid) {
   if (isActive(App.session)) { toast('Спершу завершіть поточний сеанс', 'err'); return; }
   $('#v-person').value = pid;
-  renderPersonInfo();
+  refreshParticipants();
   location.hash = '#/verify';
   await startSession({ mode: 'verify', claimed_person_id: pid, origin: 'monitor' });
 }
@@ -335,6 +557,7 @@ function onEnroll(e) {
   if (e.ok) {
     toast(`Еталон ${e.person_id} зареєстровано: ${STORED_TEXT[e.stored]}`);
     refreshParticipants();
+    if (App.view === 'persons') refreshPersons();
   } else {
     toast(e.message, 'err');
   }
@@ -685,16 +908,7 @@ function renderVerify() {
 
 // ----- моніторинг -----
 
-let facesKey = null, logKey = null;
-
-function eventCells(e) {
-  if (e.kind === 'pad') {
-    const text = DECISION_TEXT[e.decision] ? DECISION_TEXT[e.decision].toLowerCase() : e.decision;
-    return `<td>${esc(e.person_id)} · перевірка: <b>${esc(text)}</b></td><td>${e.score != null ? 'оцінка ' + fmt(e.score) : '–'}</td>`;
-  }
-  const who = e.kind === 'known' ? esc(e.person_id) : '<b class="unknown">невідома</b>';
-  return `<td>${who}</td><td>${fmt(e.similarity)}</td>`;
-}
+let facesKey = null;
 
 function renderMonitor() {
   const f = App.frame && App.frame.monitor ? App.frame : null;
@@ -747,15 +961,8 @@ function renderMonitor() {
     if (small) small.textContent = x.nearest ? `найближчий еталон: ${x.nearest}` : '';
   });
 
-  // журнал подій
-  const events = mon ? mon.events : (st ? st.events.slice(0, 12) : []);
-  const lk = events.length ? `${events.length}|${events[0].time}|${events[0].kind}|${events[0].person_id}` : '';
-  if (lk !== logKey) {
-    logKey = lk;
-    $('#m-log tbody').innerHTML = events.length
-      ? events.map(e => `<tr class="${e.kind}"><td class="mono">${esc(e.time)}</td>${eventCells(e)}</tr>`).join('')
-      : '<tr class="empty"><td colspan="3">подій ще немає</td></tr>';
-  }
+  // журнал інцидентів
+  renderIncidents();
 
   // швидкодія
   $('#m-p-det').textContent = f ? `${fmt(f.timings.detect_ms, 0)} / ${fmt(f.timings.embed_ms, 0)} мс` : '–';
@@ -847,26 +1054,30 @@ async function refreshRecordings() {
     App.recordings = await api('/api/recordings');
   } catch (e) {
     App.recordings = null;
-    body.innerHTML = `<tr class="empty"><td colspan="9">${esc(e.message)}</td></tr>`;
+    body.innerHTML = `<tr class="empty"><td colspan="10">${esc(e.message)}</td></tr>`;
     return;
   }
   const { rows, summary } = App.recordings;
   const tools = App.config.swap_tools;
+  // перерваний сеанс (лише відео без анотації) переглянути не можна – кнопки для нього немає
+  const viewCell = r => (r.reviewable ? `<td><button class="btn sm" data-open-review="${esc(r.name)}"
+    title="Відео сеансу з графіком подібності і викликами">Переглянути</button></td>` : '<td></td>');
   body.innerHTML = rows.length ? rows.map(r => {
     if (!r.presentation_type) {
-      return `<tr><td class="mono">${r.id}</td><td>${esc(r.participant)}</td><td colspan="6" class="muted">${esc(r.name)}</td><td>${statusCell(r)}</td></tr>`;
+      return `<tr><td class="mono">${r.id}</td><td>${esc(r.participant)}</td><td colspan="6" class="muted">${esc(r.name)}</td><td>${statusCell(r)}</td>${viewCell(r)}</tr>`;
     }
     const attack = r.presentation_type === 'attack';
+    const sess = r.layout === 'imported' && r.session_index ? ` <span class="muted">· с${r.session_index}</span>` : '';
     return `<tr title="${esc(r.name)}${r.score != null ? ' · оцінка ' + fmt(r.score) : ''}">
-      <td class="mono">${r.id}</td><td>${esc(r.participant)}</td>
+      <td class="mono">${r.id}</td><td>${esc(r.participant)}${sess}</td>
       <td><span class="badge ${attack ? 'attack' : ''}">${attack ? 'Атака' : 'Справжнє'}</span></td>
       <td>${attack ? esc(tools[r.swap_tool] || r.swap_tool) : '–'}</td>
       <td>${esc(r.target_face) || '–'}</td>
       <td>${r.challenges.map(esc).join(' · ') || '–'}</td>
       <td>${conditionText(r)}</td>
       <td class="mono">${r.duration_s != null ? fmt(r.duration_s, 1) + ' с' : '–'}</td>
-      <td>${statusCell(r)}</td></tr>`;
-  }).join('') : '<tr class="empty"><td colspan="9">Записів ще немає</td></tr>';
+      <td>${statusCell(r)}</td>${viewCell(r)}</tr>`;
+  }).join('') : '<tr class="empty"><td colspan="10">Записів ще немає</td></tr>';
   $('#s-participants').textContent = summary.participants;
   $('#s-sessions').textContent = summary.sessions;
   $('#s-bona').textContent = summary.bona_fide;
@@ -885,25 +1096,601 @@ async function review(name, reviewed) {
   }
 }
 
+// ----- перегляд сеансу: відео, графік з курсором часу, виклики і рішення -----
+
+const LAYOUT_TEXT = {
+  live: 'живий запис (веб-інтерфейс)', imported: 'віддалений запис (імпорт)', memory: 'сеанс верифікації (пам\'ять сервера)',
+};
+
+// Кадри сеансу зберігаються в пам'яті сторінки як ArrayBuffer (не в кеші браузера на диску),
+// для показу кадр декодується в ImageBitmap; декодованих кадрів тримається не більше BITMAPS.
+const Review = {
+  uid: null, meta: null, bufs: [], bitmaps: new Map(), loaded: 0, playing: false, speed: 1,
+  tau: 0, end: 0, lastTs: 0, shown: -1, token: 0, chartMap: null, BITMAPS: 40,
+
+  async open(uid) {
+    this.close();
+    const token = ++this.token;
+    this.uid = uid;
+    this.message('Розшифрування запису в пам\'яті сервера і підготовка кадрів…');
+    $('#rv-uid').textContent = uid;
+    $('#rv-title').textContent = 'Запис сеансу';
+    let meta;
+    try {
+      meta = await api(`/api/review/${encodeURIComponent(uid)}`);
+    } catch (e) {
+      if (token !== this.token) return;
+      this.message(`Сеанс неможливо показати: ${e.message}`);
+      this.renderInfo(null);
+      return;
+    }
+    if (token !== this.token) return;
+    this.meta = meta;
+    const ft = meta.frames.t, st = meta.series.t;
+    this.end = Math.max(meta.end_s || 0, ft.length ? ft[ft.length - 1] : 0, st.length ? st[st.length - 1] : 0, 0.1);
+    this.tau = 0;
+    this.bufs = new Array(meta.frames.count);
+    this.renderInfo(meta);
+    this.update();
+    if (!meta.frames.count) {
+      this.message(meta.frames.missing ? 'Відео запису не знайдено – показано лише графік і виклики'
+        : 'У вікні сеансу немає кадрів відео');
+      $('#rv-scrub').disabled = false;
+      return;
+    }
+    this.message(`Завантаження кадрів: 0 з ${meta.frames.count}`);
+    let next = 0;
+    const worker = async () => {
+      while (next < meta.frames.count && token === this.token) {
+        const i = next++;
+        try {
+          const r = await fetch(`/api/review/${encodeURIComponent(uid)}/frame/${i}.jpg`, { cache: 'no-store' });
+          if (!r.ok) continue;
+          const buf = await r.arrayBuffer();
+          if (token !== this.token) return;
+          this.bufs[i] = buf;
+          this.loaded++;
+        } catch (_) { continue; }
+        if (this.loaded === 1 || i === 0) { $('#rv-placeholder').hidden = true; this.draw(true); }
+        if (this.loaded % 10 === 0) $('#rv-title').textContent = `Завантаження кадрів: ${this.loaded} з ${meta.frames.count}`;
+      }
+    };
+    await Promise.all(Array.from({ length: 6 }, worker));
+    if (token !== this.token) return;
+    $('#rv-title').textContent = this.title();
+    $('#rv-play').disabled = false;
+    $('#rv-scrub').disabled = false;
+    this.draw(true);
+  },
+
+  close() {
+    this.token++;
+    this.pause();
+    for (const b of this.bitmaps.values()) b.close && b.close();
+    this.bitmaps.clear();
+    Object.assign(this, { uid: null, meta: null, bufs: [], loaded: 0, tau: 0, shown: -1 });
+    $('#rv-play').disabled = true;
+    $('#rv-scrub').disabled = true;
+    $('#rv-chip').hidden = true;
+    $('#rv-sim').hidden = true;
+    const c = $('#rv-canvas');
+    c.getContext('2d').clearRect(0, 0, c.width, c.height);
+  },
+
+  message(text) {
+    $('#rv-message').textContent = text;
+    $('#rv-placeholder').hidden = false;
+  },
+
+  title() {
+    const m = this.meta;
+    if (!m) return 'Запис сеансу';
+    const who = m.participant ? `учасник ${m.participant}` : `заявлена особа ${m.claimed_identity || '–'}`;
+    return `${LAYOUT_TEXT[m.layout] || m.layout} · ${who} · кадрів ${m.frames.count}`;
+  },
+
+  play() {
+    if (!this.meta || this.playing) return;
+    if (this.tau >= this.end - 1e-3) this.tau = 0;
+    this.playing = true;
+    this.lastTs = performance.now();
+    $('#rv-play').textContent = '❚❚ Пауза';
+    requestAnimationFrame(ts => this.tick(ts));
+  },
+  pause() {
+    this.playing = false;
+    $('#rv-play').textContent = '▶ Відтворити';
+  },
+  toggle() { if (this.playing) this.pause(); else this.play(); },
+  tick(ts) {
+    if (!this.playing) return;
+    this.tau = Math.min(this.end, this.tau + Math.max(0, ts - this.lastTs) / 1000 * this.speed);
+    this.lastTs = ts;
+    if (this.tau >= this.end) this.pause();
+    this.update();
+    if (this.playing) requestAnimationFrame(t => this.tick(t));
+  },
+  seek(tau) {
+    if (!this.meta) return;
+    this.tau = Math.max(0, Math.min(this.end, tau));
+    this.update();
+  },
+  setSpeed(v) {
+    this.speed = v;
+    $$('.speed [data-speed]').forEach(b => b.classList.toggle('on', +b.dataset.speed === v));
+  },
+
+  // Останній кадр з міткою часу не пізніше tau (бінарний пошук).
+  frameAt(tau) {
+    const t = this.meta ? this.meta.frames.t : [];
+    if (!t.length) return -1;
+    let lo = 0, hi = t.length - 1;
+    if (tau <= t[0]) return 0;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (t[mid] <= tau) lo = mid; else hi = mid - 1;
+    }
+    return lo;
+  },
+
+  async bitmap(i) {
+    if (this.bitmaps.has(i)) return this.bitmaps.get(i);
+    const buf = this.bufs[i];
+    if (!buf) return null;
+    const bmp = await createImageBitmap(new Blob([buf], { type: 'image/jpeg' }));
+    this.bitmaps.set(i, bmp);
+    while (this.bitmaps.size > this.BITMAPS) {
+      const [k, old] = this.bitmaps.entries().next().value;
+      if (old.close) old.close();
+      this.bitmaps.delete(k);
+    }
+    return bmp;
+  },
+
+  async draw(force = false) {
+    let i = this.frameAt(this.tau);
+    if (i < 0) return;
+    // кадр ще не завантажено – показується найближчий попередній
+    while (i > 0 && !this.bufs[i]) i--;
+    if (!this.bufs[i] || (i === this.shown && !force)) return;
+    const token = this.token;
+    let bmp;
+    try { bmp = await this.bitmap(i); } catch (_) { return; }
+    if (!bmp || token !== this.token) return;
+    const c = $('#rv-canvas');
+    if (c.width !== bmp.width || c.height !== bmp.height) { c.width = bmp.width; c.height = bmp.height; }
+    c.getContext('2d').drawImage(bmp, 0, 0);
+    this.shown = i;
+  },
+
+  // Виклик, у вікні якого зараз курсор, і текст підказки над відео.
+  current() {
+    const m = this.meta, tau = this.tau;
+    const chs = m.challenges.filter(c => c.t_start != null && c.t_end != null);
+    const cur = chs.find(c => tau >= c.t_start && tau <= c.t_end);
+    if (cur) {
+      const same = chs.filter(c => c.attempt === cur.attempt);
+      const att = Math.max(...chs.map(c => c.attempt)) > 1 ? `спроба ${cur.attempt}, ` : '';
+      return { c: cur, text: `${att}виклик ${same.indexOf(cur) + 1} з ${same.length}: ${cur.name} · ${cur.performed ? 'виконано ✓' : 'не виконано ×'}` };
+    }
+    if (!chs.length || tau < chs[0].t_start) return { c: null, text: 'Фіксація еталона сеансу: дивитися в камеру' };
+    if (tau > chs[chs.length - 1].t_end) return { c: null, text: 'Вікно «після» останнього виклику' };
+    return { c: null, text: 'Між викликами' };
+  },
+
+  update() {
+    const m = this.meta;
+    if (!m) return;
+    $('#rv-clock').textContent = `${fmt(this.tau, 1)} / ${fmt(this.end, 1)} с`;
+    const scrub = $('#rv-scrub');
+    if (document.activeElement !== scrub || this.playing) scrub.value = String(Math.round(this.tau / this.end * 1000));
+    const cur = this.current();
+    $('#rv-chip').hidden = false;
+    $('#rv-chip').textContent = cur.text;
+    // поточна подібність s_ref у момент кадру
+    const st = m.series.t;
+    let k = -1;
+    for (let i = 0; i < st.length && st[i] <= this.tau + 1e-6; i++) k = i;
+    const sref = k >= 0 ? m.series.s_ref[k] : null;
+    $('#rv-sim').hidden = sref == null;
+    if (sref != null) $('#rv-sim').textContent = `s_ref ${fmt(sref)} · s_enr ${fmt(m.series.s_enr[k])}`;
+    $$('#rv-challenges li[data-i]').forEach(li => li.classList.toggle('current', cur.c != null && +li.dataset.i === m.challenges.indexOf(cur.c)));
+    drawReviewChart($('#rv-chart'), this);
+    this.draw();
+  },
+
+  renderInfo(m) {
+    const info = $('#rv-info');
+    if (!m) {
+      info.innerHTML = '';
+      $('#rv-challenges').innerHTML = '<li class="empty">–</li>';
+      $('#rv-truth').textContent = '–';
+      setReviewDecision(null);
+      drawReviewChart($('#rv-chart'), null);
+      return;
+    }
+    const rows = [];
+    if (m.participant) rows.push(['Учасник', m.participant]);
+    rows.push(['Заявлена особа', m.claimed_identity || '–']);
+    if (m.session_index) rows.push(['Сеанс у записі', `№ ${m.session_index}`]);
+    if (m.lighting) rows.push(['Освітлення', LIGHT_SHORT[m.lighting] || m.lighting]);
+    rows.push(['Тривалість', m.duration_s != null ? `${fmt(m.duration_s, 1)} с` : '–']);
+    rows.push(['Кадрів відео', m.frames.count || 'немає']);
+    if (m.frames.width) rows.push(['Розмір кадру', `${m.frames.width}×${m.frames.height}`]);
+    rows.push(['Виклики виконано', `${m.performed} з ${m.count}`]);
+    info.innerHTML = rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
+    $('#rv-challenges').innerHTML = m.challenges.length ? m.challenges.map((c, i) => {
+      const sc = c.score != null ? `оцінка ${fmt(c.score)}` : c.model_score != null ? `оцінка моделі ${fmt(c.model_score)}` : '';
+      const span = c.t_start != null ? `${fmt(c.t_start, 1)}–${fmt(c.t_end, 1)} с` : '–';
+      const att = c.attempt > 1 ? `спроба ${c.attempt} · ` : '';
+      return `<li data-i="${i}" class="${c.performed ? 'done' : 'failed'}" title="Перейти до виклику">
+        <span class="ico">${c.performed ? '✓' : '×'}</span>
+        <span>${esc(c.name)}<small>${att}${span} · ${c.performed ? 'виконано' : 'не виконано'}${sc ? ' · ' + sc : ''}</small></span></li>`;
+    }).join('') : '<li class="empty">викликів немає</li>';
+    // мітка набору даних: що насправді було в записі
+    let truth = 'Живий сеанс верифікації – мітки набору немає';
+    if (m.presentation_type === 'attack') {
+      const tool = App.config.swap_tools[m.swap_tool] || m.swap_tool || 'інструмент не вказано';
+      truth = `<b>Атака підміни обличчя</b><br><span class="muted">${esc(tool)}${m.target_face ? ', цільове обличчя ' + esc(m.target_face) : ''}</span>`;
+    } else if (m.presentation_type === 'bona_fide') {
+      truth = '<b>Справжнє подання</b>';
+    }
+    const d = m.decision.decision;
+    if (m.presentation_type && (d === 'attack' || d === 'bona_fide')) {
+      const ok = (d === 'attack') === (m.presentation_type === 'attack');
+      truth += `<div class="match ${ok ? 'ok' : 'bad'}">${ok ? 'Рішення збігається з міткою' : 'Рішення не збігається з міткою'}</div>`;
+    }
+    $('#rv-truth').innerHTML = truth;
+    setReviewDecision(m);
+  },
+};
+
+function setReviewDecision(m) {
+  const d = m ? m.decision : null;
+  let cls = 'idle', caption = '–', title = '–', note = '';
+  if (d) {
+    if (d.source === 'none') {
+      caption = 'Запис без оцінки';
+      title = 'ОЦІНКИ НЕМАЄ';
+      note = d.note;
+    } else {
+      cls = d.decision === 'offline' ? 'idle' : d.decision;
+      caption = d.source === 'model' ? `Оцінка поточною моделлю (${d.model_version || '?'})` : 'Рішення під час сеансу';
+      title = DECISION_TEXT[d.decision] || 'ОЦІНКИ НЕМАЄ';
+      note = d.source === 'model' ? 'під час запису оцінка не обчислювалася' : d.note;
+      if (d.decision === 'offline') note = d.note;
+    }
+  }
+  $('#rv-decision').className = `decision ${cls}`;
+  $('#rv-d-caption').textContent = caption;
+  $('#rv-d-title').textContent = title;
+  $('#rv-d-score').textContent = fmt(d ? d.score : null);
+  $('#rv-d-threshold').textContent = fmt(d ? d.threshold : null);
+  $('#rv-d-bar').style.width = `${Math.round(((d && d.score) || 0) * 100)}%`;
+  $('#rv-d-note').textContent = note || '';
+}
+
+// Графік перегляду: увесь сеанс, вікна викликів з назвами, курсор поточного кадру.
+function drawReviewChart(canvas, R) {
+  const dpr = window.devicePixelRatio || 1;
+  const cw = canvas.clientWidth, ch = canvas.clientHeight;
+  if (!cw || !ch) return;
+  if (canvas.width !== Math.round(cw * dpr) || canvas.height !== Math.round(ch * dpr)) {
+    canvas.width = Math.round(cw * dpr);
+    canvas.height = Math.round(ch * dpr);
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cw, ch);
+  const m = R && R.meta;
+  const L = 34, Rt = cw - 14, T = 22, B = ch - 22;
+  const tMax = m ? R.end : 10, tMin = 0;
+  const ser = m ? m.series : { t: [], s_ref: [], s_enr: [] };
+  let yMin = 0.2;
+  for (const arr of [ser.s_ref, ser.s_enr]) for (const v of arr) if (v != null && v < yMin) yMin = v;
+  yMin = Math.max(-0.2, Math.floor((yMin - 0.05) * 10) / 10);
+  const yMax = 1.05;
+  const x = t => L + (t - tMin) / (tMax - tMin) * (Rt - L);
+  const y = v => B - (v - yMin) / (yMax - yMin) * (B - T);
+  if (R) R.chartMap = { L, R: Rt, tMin, tMax };
+  ctx.font = '12px "Segoe UI", Arial, sans-serif';
+  ctx.fillStyle = '#999';
+  ctx.textBaseline = 'middle';
+  ctx.strokeStyle = '#eee';
+  ctx.lineWidth = 1;
+  for (let v = Math.ceil(yMin * 5) / 5; v <= 1.0001; v += 0.2) {
+    ctx.beginPath(); ctx.moveTo(L, y(v)); ctx.lineTo(Rt, y(v)); ctx.stroke();
+    ctx.fillText(v.toFixed(1), 4, y(v));
+  }
+  ctx.textBaseline = 'top';
+  const step = tMax > 40 ? 5 : tMax > 16 ? 2 : 1;
+  for (let t = 0; t <= tMax + 1e-6; t += step) ctx.fillText(`${t} с`, Math.min(x(t) - 8, Rt - 24), B + 5);
+  if (!m) return;
+  const st = m.settings;
+  const chs = m.challenges.filter(c => c.t_start != null && c.t_end != null);
+  // вікна «до» і «після» – світле тло, «під час» – сіре; невиконаний виклик – штрихування
+  for (const c of chs) {
+    const a = x(Math.max(tMin, c.t_start - st.before_s)), b = x(c.t_start), e = x(c.t_end);
+    const f = x(Math.min(tMax, c.t_end + st.after_s));
+    ctx.fillStyle = '#f6f6f6';
+    ctx.fillRect(a, T, Math.max(0, b - a), B - T);
+    ctx.fillRect(e, T, Math.max(0, f - e), B - T);
+  }
+  chs.forEach((c, k) => {
+    const a = x(c.t_start), b = x(c.t_end);
+    ctx.fillStyle = c.performed ? '#e3e3e3' : '#efefef';
+    ctx.fillRect(a, T, Math.max(1, b - a), B - T);
+    if (!c.performed) {
+      ctx.save();
+      ctx.beginPath(); ctx.rect(a, T, Math.max(1, b - a), B - T); ctx.clip();
+      ctx.strokeStyle = '#cfcfcf';
+      for (let s = a - (B - T); s < b; s += 8) { ctx.beginPath(); ctx.moveTo(s, B); ctx.lineTo(s + (B - T), T); ctx.stroke(); }
+      ctx.restore();
+    }
+    // підпис над вікном: номер, коротка назва, виконано чи ні; якщо не вміщається – лише номер
+    ctx.fillStyle = c.performed ? '#111' : '#777';
+    ctx.textBaseline = 'top';
+    ctx.font = '600 12px "Segoe UI", Arial, sans-serif';
+    const mark = c.performed ? '✓' : '×';
+    const prevEnd = k > 0 ? x(chs[k - 1].t_end) + 4 : L;
+    const nextStart = k + 1 < chs.length ? x(chs[k + 1].t_start) - 4 : Rt;
+    const room = nextStart - Math.max(prevEnd, a - 30);
+    let label = `${k + 1}. ${c.short} ${mark}`;
+    if (ctx.measureText(label).width > room) label = `${k + 1} ${mark}`;
+    const lw = ctx.measureText(label).width;
+    const lx = Math.max(L, Math.min(Rt - lw, (a + b) / 2 - lw / 2));
+    ctx.fillText(label, lx, 4);
+  });
+  ctx.font = '12px "Segoe UI", Arial, sans-serif';
+  const line = (arr, color, dash, width) => {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.setLineDash(dash);
+    ctx.beginPath();
+    let pen = false;
+    for (let i = 0; i < arr.length; i++) {
+      if (arr[i] == null) { pen = false; continue; }
+      const px = x(ser.t[i]), py = y(Math.min(1, arr[i]));
+      if (pen) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+      pen = true;
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+  };
+  line(ser.s_enr, '#8a8a8a', [5, 4], 1.6);
+  line(ser.s_ref, '#000', [], 2);
+  // курсор поточного кадру
+  const cx = x(R.tau);
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(cx, T - 2); ctx.lineTo(cx, B); ctx.stroke();
+  ctx.fillStyle = '#000';
+  ctx.beginPath(); ctx.moveTo(cx - 5, T - 6); ctx.lineTo(cx + 5, T - 6); ctx.lineTo(cx, T); ctx.closePath(); ctx.fill();
+}
+
+// ----- підтвердження незворотних дій -----
+
+function confirmDialog(title, text, yes = 'Видалити') {
+  return new Promise(resolve => {
+    $('#cf-title').textContent = title;
+    $('#cf-text').textContent = text;
+    $('#cf-yes').textContent = yes;
+    const box = $('#confirm');
+    const done = ok => {
+      box.hidden = true;
+      $('#cf-yes').onclick = $('#cf-no').onclick = box.onclick = null;
+      resolve(ok);
+    };
+    $('#cf-yes').onclick = () => done(true);
+    $('#cf-no').onclick = () => done(false);
+    box.onclick = e => { if (e.target === box) done(false); };
+    box.hidden = false;
+    $('#cf-no').focus();
+  });
+}
+
+// ----- дашборд -----
+
+const fmtDateTime = iso => iso ? iso.replace('T', ' ').slice(0, 16) : '–';
+const STORED_SHORT = { encrypted: 'зашифровано', memory: 'лише в пам\'яті', plain: 'відкритий .npy', locked: 'зашифровано, ключ не задано' };
+
+async function refreshDashboard() {
+  let d;
+  try { d = await api('/api/dashboard'); } catch (e) { $('#d-sub').textContent = e.message; return; }
+  if (App.view !== 'dashboard') return;
+  const c = d.counts;
+  const tiles = [
+    ['Відомі особи', c.known, 'появ працівників з бази', ''],
+    ['Невідомі особи', c.unknown, 'тривог моніторингу', c.unknown ? 'alarm' : ''],
+    ['Перевірку пройдено', c.pad_bona_fide, 'справжнє подання', c.pad_bona_fide ? 'ok' : ''],
+    ['Атак виявлено', c.pad_attack, 'перевірка викликами', c.pad_attack ? 'alarm' : ''],
+    ['Не пройдено', c.pad_failed, 'виклики не виконано', c.pad_failed ? 'warn' : ''],
+    ['Осіб у базі', d.persons, 'еталонів працівників', ''],
+  ];
+  $('#d-tiles').innerHTML = tiles.map(([name, v, sub, cls]) =>
+    `<div class="tile ${cls}"><small>${name}</small><b>${v}</b><span>${sub}</span></div>`).join('');
+  $('#d-sub').textContent = `події за сьогодні (${d.date}) з журналу інцидентів сервера`;
+  ingestEvents(d.incidents);
+  const ul = $('#d-incidents');
+  ul.replaceChildren(...(d.incidents.length ? d.incidents.map(e => {
+    const li = incidentRow(App.incidents.find(x => x.id === e.id) || e);
+    return li;
+  }) : [Object.assign(document.createElement('li'), { className: 'empty', textContent: 'тривог і перевірок ще не було' })]));
+  $('#d-state').innerHTML = [
+    ['Камера', d.camera_active ? 'кадри надходять' : 'кадри не надходять'],
+    ['Швидкодія', d.fps != null ? `${fmt(d.fps, 1)} кадр/с` : '–'],
+    ['Поріг розпізнавання', fmt(d.thresholds.recognition)],
+    ['Поріг атаки', fmt(d.thresholds.pad)],
+    ['Ключ шифрування', d.key_set ? 'задано' : 'не задано'],
+    ['Сервер запущено', fmtDateTime(d.started_at)],
+  ].map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('');
+}
+
+// ----- база осіб -----
+
+async function refreshPersons() {
+  let d;
+  try { d = await api('/api/persons'); } catch (e) { toast(e.message, 'err'); return; }
+  App.persons = d;
+  $('#p-count').textContent = d.count;
+  $('#p-enc').textContent = d.persons.filter(p => p.stored === 'encrypted' || p.stored === 'locked').length;
+  $('#p-mem').textContent = d.persons.filter(p => p.stored === 'memory').length;
+  $('#p-keynote').textContent = d.key_set
+    ? 'Ключ PAD_DATASET_KEY задано: нові еталони зберігаються зашифрованими (AES-256-GCM).'
+    : 'Ключ PAD_DATASET_KEY не задано: нові еталони лишаються в пам\'яті сервера до перезапуску, зашифровані файли не читаються.';
+  renderPersonsTable();
+}
+
+function renderPersonsTable() {
+  const d = App.persons;
+  const body = $('#p-table tbody');
+  if (!d) return;
+  const q = $('#p-search').value.trim().toLowerCase();
+  const rows = d.persons.filter(p => !q || p.id.toLowerCase().includes(q));
+  body.innerHTML = rows.length ? rows.map(p => `<tr>
+      <td class="mono"><b>${esc(p.id)}</b></td><td>${esc(STORED_SHORT[p.stored] || p.stored)}</td>
+      <td class="mono">${esc(fmtDateTime(p.registered))}</td>
+      <td class="acts"><button class="btn sm" data-p-check="${esc(p.id)}" title="Сеанс перевірки викликами для ${esc(p.id)}">Перевірити</button>
+        <button class="btn sm" data-p-del="${esc(p.id)}">Видалити</button></td></tr>`).join('')
+    : `<tr class="empty"><td colspan="4">${d.persons.length ? 'нічого не знайдено' : 'база порожня – додайте особу з фото або з камери'}</td></tr>`;
+}
+
+async function deletePerson(pid) {
+  const ok = await confirmDialog(`Видалити ${pid}?`,
+    `Еталон ${pid} буде видалено з бази (файл data/enrolled/${pid}.npy.enc і пам'ять сервера). Особа більше не розпізнаватиметься. Цю дію не можна скасувати.`);
+  if (!ok) return;
+  try {
+    await api(`/api/persons/${encodeURIComponent(pid)}`, { method: 'DELETE' });
+    toast(`Еталон ${pid} видалено`);
+  } catch (e) { toast(e.message, 'err'); }
+  refreshPersons();
+  refreshParticipants();
+}
+
+function personId() {
+  const id = $('#p-id').value.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(id)) {
+    toast('Вкажіть псевдонім латиницею (наприклад, P08), без імені та прізвища', 'err');
+    return null;
+  }
+  return id;
+}
+
+async function addPersonPhoto(file) {
+  const id = personId();
+  if (!id) return;
+  try {
+    const r = await api(`/api/participants/${encodeURIComponent(id)}/image`, { body: file });
+    toast(`Особу ${r.person_id} додано з фото: ${STORED_TEXT[r.stored]}`);
+  } catch (e) { toast(e.message, 'err'); }
+  refreshPersons();
+  refreshParticipants();
+}
+
+function addPersonCamera() {
+  const id = personId();
+  if (!id) return;
+  if (!Cam.active) { toast('Спершу увімкніть камеру', 'err'); return; }
+  if (isActive(App.session)) { toast('Спершу завершіть поточний сеанс', 'err'); return; }
+  Stream.send({ cmd: 'enroll', person_id: id });
+}
+
+function renderPersons() {
+  drawFrame($('#p-canvas'), App.frame, App.frame && App.frame.box ? `обличчя · ${fmt(App.frame.box[4])}` : '');
+  $('#p-pv-center').hidden = Cam.active;
+  const e = App.enroll;
+  $('#p-pv-instr').hidden = !e;
+  if (e) {
+    $('#p-instr').textContent = `Реєстрація ${e.person_id}: дивіться прямо в камеру`;
+    $('#p-pct').textContent = `${Math.round((e.progress || 0) * 100)} %`;
+    $('#p-progress').style.width = `${Math.round((e.progress || 0) * 100)}%`;
+  }
+  $('#p-cam').disabled = !!e;
+}
+
+// ----- налаштування -----
+
+async function refreshSettings() {
+  let s;
+  try { s = await api('/api/settings'); } catch (e) { toast(e.message, 'err'); return; }
+  showSettings(s);
+}
+
+function showSettings(s) {
+  $('#s-rec').value = s.recognition_threshold.toFixed(2);
+  $('#s-pad').value = s.pad_threshold.toFixed(2);
+  $('#s-config').textContent = `У конфігурації: розпізнавання ${fmt(s.config.recognition_threshold)}, атака ${fmt(s.config.pad_threshold)}.`;
+  const kv = rows => rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
+  const file = s.classifier_file ? s.classifier_file.split(/[\\/]/).slice(-2).join('/') : 'немає (базовий поріг s_ref)';
+  $('#s-pad-info').innerHTML = kv([
+    ['Викликів у сеансі', s.challenge_count], ['Тривалість виклику', `${fmt(s.duration_s, 1)} с`],
+    ['Типи викликів', s.challenge_types_short.join(' · ')], ['Повторних спроб', s.max_retries],
+    ['Обмеження сеансу', `${fmt(s.session_timeout_s, 0)} с`], ['Файл класифікатора', file],
+    ['Версія моделі', s.classifier_version],
+  ]);
+  $('#s-rec-info').innerHTML = kv([
+    ['Детектор', s.detector], ['Ембединг', s.embedder], ['Пошук', s.search],
+    ['Кадрів до події', s.confirm_frames], ['Повтор події через', `${fmt(s.event_gap_s, 0)} с`],
+  ]);
+  $('#s-data-info').innerHTML = kv([
+    ['Шифрування', s.encryption.algorithm], ['Ключ PAD_DATASET_KEY', s.encryption.key_set ? 'задано' : 'не задано'],
+    ['Сервер', '127.0.0.1 (лише цей комп\'ютер)'],
+  ]);
+}
+
+async function applySettings(reset) {
+  const body = reset ? { reset: true } : { recognition_threshold: +$('#s-rec').value, pad_threshold: +$('#s-pad').value };
+  if (!reset && [body.recognition_threshold, body.pad_threshold].some(v => !(v >= 0 && v <= 1))) {
+    toast('Пороги мають бути в межах від 0 до 1', 'err');
+    return;
+  }
+  try {
+    const s = await api('/api/settings', { method: 'PUT', json: body });
+    showSettings(s);
+    App.config.settings.threshold = s.pad_threshold;
+    App.config.monitoring.threshold = s.recognition_threshold;
+    toast(reset ? 'Повернуто значення з конфігурації' : 'Пороги змінено до перезапуску сервера');
+  } catch (e) { toast(e.message, 'err'); }
+}
+
 // ----- маршрути і запуск -----
 
 function render() {
   if (!App.config) return;
   if (App.view === 'verify') renderVerify();
   else if (App.view === 'monitor') renderMonitor();
-  else renderRecord();
+  else if (App.view === 'record') renderRecord();
+  else if (App.view === 'persons') renderPersons();
 }
 
-const VIEWS = { '#/record': 'record', '#/monitor': 'monitor' };
+const VIEWS = {
+  '#/record': 'record', '#/monitor': 'monitor', '#/dashboard': 'dashboard', '#/persons': 'persons',
+  '#/settings': 'settings',
+};
+const ALL_VIEWS = ['verify', 'monitor', 'record', 'review', 'dashboard', 'persons', 'settings'];
 
 function route() {
   const prev = App.view;
-  App.view = VIEWS[location.hash] || 'verify';
-  for (const v of ['verify', 'monitor', 'record']) $(`#view-${v}`).hidden = App.view !== v;
+  const rv = location.hash.match(/^#\/review\/([^/]+)$/);
+  App.view = rv ? 'review' : VIEWS[location.hash] || 'verify';
+  for (const v of ALL_VIEWS) $(`#view-${v}`).hidden = App.view !== v;
+  if (App.view === 'dashboard') refreshDashboard();
+  if (App.view === 'persons') refreshPersons();
+  if (App.view === 'settings') refreshSettings();
   $$('.topbar nav a[data-view]').forEach(a => a.classList.toggle('active', a.dataset.view === App.view));
+  closeIncident();
+  if (App.view === 'review') {
+    $('#rv-back').href = App.lastHash;
+    const uid = decodeURIComponent(rv[1]);
+    if (Review.uid !== uid) Review.open(uid);
+  } else {
+    App.lastHash = location.hash || '#/verify';
+    if (prev === 'review') Review.close();
+  }
+  schedule();
   // моніторинг використовує той самий потік кадрів: сервер перемикає режим з'єднання
   if (App.view === 'monitor' && prev !== 'monitor') {
-    facesKey = logKey = null;
+    facesKey = null;
     App.frame = null;
     Stream.send({ cmd: 'monitor', on: true });
   } else if (prev === 'monitor' && App.view !== 'monitor') {
@@ -953,9 +1740,74 @@ function bind() {
   $('#r-table').addEventListener('click', e => {
     const b = e.target.closest('[data-review]');
     if (b) review(b.dataset.review, b.dataset.to === '1');
+    const v = e.target.closest('[data-open-review]');
+    if (v) location.hash = `#/review/${encodeURIComponent(v.dataset.openReview)}`;
   });
+
+  // дашборд, база осіб, налаштування
+  $('#d-incidents').addEventListener('click', e => {
+    const li = e.target.closest('[data-inc]');
+    if (li) openIncident(+li.dataset.inc);
+  });
+  setInterval(() => { if (App.view === 'dashboard') refreshDashboard(); }, 3000);
+  $('#p-search').addEventListener('input', renderPersonsTable);
+  $('#p-table').addEventListener('click', e => {
+    const del = e.target.closest('[data-p-del]');
+    if (del) deletePerson(del.dataset.pDel);
+    const chk = e.target.closest('[data-p-check]');
+    if (chk) checkPerson(chk.dataset.pCheck);
+  });
+  $('#p-photo').addEventListener('change', e => { if (e.target.files[0]) addPersonPhoto(e.target.files[0]); e.target.value = ''; });
+  $('#p-cam').addEventListener('click', addPersonCamera);
+  $('#s-apply').addEventListener('click', () => applySettings(false));
+  $('#s-reset').addEventListener('click', () => applySettings(true));
+
+  // сповіщення і журнал інцидентів
+  $('#sound').addEventListener('click', () => Sound.toggle());
+  $('#m-only-alarms').addEventListener('change', renderIncidents);
+  const openInc = e => {
+    const li = e.target.closest('[data-inc]');
+    if (li) openIncident(+li.dataset.inc);
+  };
+  $('#m-incidents').addEventListener('click', openInc);
+  $('#m-incidents').addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openInc(e); } });
+  $('#inc-close').addEventListener('click', closeIncident);
+  $('#incident').addEventListener('click', e => {
+    if (e.target.id === 'incident') closeIncident();
+    const b = e.target.closest('[data-review-open]');
+    if (b) location.hash = `#/review/${encodeURIComponent(b.dataset.reviewOpen)}`;
+  });
+
+  // перегляд сеансу
+  $('#rv-play').addEventListener('click', () => Review.toggle());
+  $('#rv-scrub').addEventListener('input', e => { Review.pause(); Review.seek(+e.target.value / 1000 * Review.end); });
+  $$('.speed [data-speed]').forEach(b => b.addEventListener('click', () => Review.setSpeed(+b.dataset.speed)));
+  const chart = $('#rv-chart');
+  const seekChart = e => {
+    const map = Review.chartMap;
+    if (!map || !Review.meta) return;
+    const r = chart.getBoundingClientRect();
+    Review.seek(map.tMin + (e.clientX - r.left - map.L) / (map.R - map.L) * (map.tMax - map.tMin));
+  };
+  chart.addEventListener('pointerdown', e => { Review.pause(); seekChart(e); chart.setPointerCapture(e.pointerId); });
+  chart.addEventListener('pointermove', e => { if (e.buttons & 1) seekChart(e); });
+  $('#rv-challenges').addEventListener('click', e => {
+    const li = e.target.closest('li[data-i]');
+    if (!li || !Review.meta) return;
+    const c = Review.meta.challenges[+li.dataset.i];
+    if (c.t_start != null) { Review.pause(); Review.seek(c.t_start - Review.meta.settings.before_s); }
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && !$('#incident').hidden) closeIncident();
+    if (e.key === 'Escape' && !$('#confirm').hidden) $('#cf-no').click();
+    if (App.view !== 'review' || e.target.closest('input, button, select, textarea')) return;
+    if (e.key === ' ') { e.preventDefault(); Review.toggle(); }
+    if (e.key === 'ArrowRight') Review.seek(Review.tau + 0.5);
+    if (e.key === 'ArrowLeft') Review.seek(Review.tau - 0.5);
+  });
+
   window.addEventListener('hashchange', route);
-  window.addEventListener('resize', render);
+  window.addEventListener('resize', () => { render(); if (App.view === 'review') Review.update(); });
 }
 
 async function init() {
@@ -967,9 +1819,11 @@ async function init() {
     return;
   }
   fillForm();
+  Sound.init();
   bind();
   await fillDevices();
   await refreshParticipants();
+  await refreshIncidents(true);   // події до відкриття сторінки – у журналі, але без сповіщень
   route();
   Stream.connect();
 }

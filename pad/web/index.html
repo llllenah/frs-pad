@@ -10,16 +10,19 @@
 <header class="topbar">
   <div class="brand"><span class="logo"></span><span class="name">FRS Platform</span></div>
   <nav>
-    <a class="off" title="Конвеєр розпізнавання – поза межами курсової роботи">Дашборд</a>
+    <a href="#/dashboard" data-view="dashboard">Дашборд</a>
     <a href="#/monitor" data-view="monitor">Моніторинг</a>
     <a href="#/verify" data-view="verify">Верифікація</a>
-    <a class="off" title="Конвеєр розпізнавання – поза межами курсової роботи">База осіб</a>
+    <a href="#/persons" data-view="persons">База осіб</a>
     <a href="#/record" data-view="record">Дослідження</a>
-    <a class="off" title="Поза межами курсової роботи">Налаштування</a>
+    <a href="#/settings" data-view="settings">Налаштування</a>
   </nav>
-  <div class="live" id="live">● OFFLINE</div>
-  <div class="avatar"></div>
+  <button class="sound" id="sound" title="Звукові сповіщення про тривоги і результати перевірок">Звук: увімк.</button>
+  <div class="live" id="live" title="З'єднання браузера з сервером (WebSocket)">● OFFLINE</div>
 </header>
+
+<!-- Сповіщення охоронця: невідома особа, атака, перевірку не пройдено, справжнє подання -->
+<div class="popups" id="popups" aria-live="assertive"></div>
 
 <!-- Моніторинг: ідентифікація 1:N у потоці камери, перехід до верифікації з викликами -->
 <main id="view-monitor" class="view monitor" hidden>
@@ -32,7 +35,7 @@
       <ul class="ids" id="m-ids"></ul>
       <div class="row">
         <button class="btn sm" id="m-reload" title="Перечитати data/enrolled і еталони в пам'яті сервера">Оновити</button>
-        <a class="btn sm" href="#/verify" title="Реєстрація еталона – на вкладці «Верифікація»">Зареєструвати</a>
+        <a class="btn sm" href="#/persons" title="Додати особу – на вкладці «База осіб»">Додати особу</a>
       </div>
     </div>
     <h3 class="cap">Розпізнавання</h3>
@@ -42,7 +45,8 @@
       <dt>Ембединг</dt><dd id="m-embedder">–</dd>
     </dl>
     <p class="hint" style="margin-top:14px">Зелена рамка – особу знайдено в базі (подібність не менша за поріг),
-      червона – невідома особа. Кнопка «Перевірити» запускає сеанс з активними викликами для цієї особи.</p>
+      червона – невідома особа. Кнопка «Перевірити» запускає сеанс з активними викликами для цієї особи.
+      Клік по рядку журналу – знімок обличчя і перегляд сеансу.</p>
     <div class="note">Прототип інтерфейсу · курсова робота</div>
   </aside>
 
@@ -72,12 +76,10 @@
   <aside class="right">
     <h3 class="cap">Обличчя в кадрі</h3>
     <ul class="faces" id="m-faces"><li class="empty">облич не виявлено</li></ul>
-    <div class="card">
-      <h4>Журнал подій</h4>
-      <table class="log" id="m-log">
-        <thead><tr><th>Час</th><th>Особа</th><th>Подібність</th></tr></thead>
-        <tbody><tr class="empty"><td colspan="3">подій ще немає</td></tr></tbody>
-      </table>
+    <div class="card incidents-card">
+      <h4>Журнал інцидентів
+        <label class="only-alarms" title="Приховати появу відомих осіб"><input type="checkbox" id="m-only-alarms"> лише тривоги</label></h4>
+      <ul class="incidents" id="m-incidents"><li class="empty">подій ще немає</li></ul>
     </div>
     <div class="card perf">
       <h4>Швидкодія</h4>
@@ -200,14 +202,6 @@
 <!-- Рисунок 4.8 – Екранна форма запису сеансів для набору даних -->
 <main id="view-record" class="view record" hidden>
   <aside class="side">
-    <h3 class="cap">Дослідження</h3>
-    <ul class="menu">
-      <li class="active">● Запис сеансів</li>
-      <li class="off" title="Реалізується в дипломному проєкті">○ Набір даних</li>
-      <li class="off" title="Реалізується в дипломному проєкті">○ Експерименти</li>
-      <li class="off" title="Реалізується в дипломному проєкті">○ Моделі класифікатора</li>
-      <li class="off" title="Реалізується в дипломному проєкті">○ Звіти</li>
-    </ul>
     <h3 class="cap">Набір даних</h3>
     <div class="plain" id="r-summary">
       <div>Учасників: <b id="s-participants">–</b></div>
@@ -281,13 +275,217 @@
       <div class="table-wrap">
         <table class="table" id="r-table">
           <thead><tr><th>ID сеансу</th><th>Учасник</th><th>Тип</th><th>Інструмент</th><th>Ціль</th>
-            <th>Виклики</th><th>Умови</th><th>Тривалість</th><th>Статус</th></tr></thead>
-          <tbody><tr class="empty"><td colspan="9">завантаження…</td></tr></tbody>
+            <th>Виклики</th><th>Умови</th><th>Тривалість</th><th>Статус</th><th></th></tr></thead>
+          <tbody><tr class="empty"><td colspan="10">завантаження…</td></tr></tbody>
         </table>
       </div>
     </div>
   </section>
 </main>
+
+<!-- Дашборд: огляд для охоронця за сьогодні (лише дані, які є на сервері) -->
+<main id="view-dashboard" class="view page" hidden>
+  <section class="content">
+    <div class="pagehead">
+      <div>
+        <h1>Огляд охорони</h1>
+        <p class="muted" id="d-sub">події за сьогодні з журналу інцидентів сервера</p>
+      </div>
+      <a class="btn primary big" href="#/monitor">Відкрити моніторинг</a>
+    </div>
+    <div class="tiles" id="d-tiles"></div>
+    <div class="grid2">
+      <div class="card">
+        <h2>Останні тривоги і перевірки</h2>
+        <ul class="incidents dash-incidents" id="d-incidents"><li class="empty">подій ще немає</li></ul>
+      </div>
+      <div class="card">
+        <h2>Стан системи</h2>
+        <dl class="kv wrap" id="d-state"></dl>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- База осіб (форма 4.3): еталони працівників, лише псевдоніми -->
+<main id="view-persons" class="view record" hidden>
+  <aside class="side">
+    <h3 class="cap">База осіб</h3>
+    <div class="plain">
+      <div>Осіб у базі: <b id="p-count">–</b></div>
+      <div>зашифровано: <b id="p-enc">–</b></div>
+      <div>лише в пам'яті: <b id="p-mem">–</b></div>
+    </div>
+    <p class="hint" style="margin-top:16px" id="p-keynote"></p>
+    <div class="note">Прототип інтерфейсу · курсова робота</div>
+  </aside>
+  <section class="content">
+    <div class="pagehead">
+      <div>
+        <h1>База осіб</h1>
+        <p class="muted">Еталони працівників для моніторингу і перевірки викликами. Лише псевдоніми, без імен і прізвищ.</p>
+      </div>
+    </div>
+    <div class="grid2">
+      <div class="card">
+        <h2>Особи</h2>
+        <input id="p-search" class="search" placeholder="Пошук за псевдонімом" spellcheck="false" autocomplete="off" aria-label="Пошук за псевдонімом">
+        <div class="table-wrap">
+          <table class="table" id="p-table">
+            <thead><tr><th>Псевдонім</th><th>Зберігання</th><th>Зареєстровано</th><th></th></tr></thead>
+            <tbody><tr class="empty"><td colspan="4">завантаження…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card form">
+        <h2>Додати особу</h2>
+        <label class="f">Псевдонім<input id="p-id" placeholder="наприклад, P08" spellcheck="false" autocomplete="off"></label>
+        <div class="add-row">
+          <label class="btn file-btn">З фото<input id="p-photo" type="file" accept="image/jpeg,image/png"></label>
+          <button class="btn" id="p-cam">З камери (30 кадрів)</button>
+        </div>
+        <div class="preview person-preview">
+          <canvas class="frame" id="p-canvas"></canvas>
+          <div class="pv-center" id="p-pv-center">
+            <div>Камеру не ввімкнено</div>
+            <button class="btn sm cam-on">Увімкнути камеру</button>
+          </div>
+          <div class="pv-instr" id="p-pv-instr" hidden>
+            <b><em id="p-instr" style="font-style:normal">Дивіться прямо в камеру</em><span id="p-pct"></span></b>
+            <div class="bar"><i id="p-progress"></i></div>
+          </div>
+        </div>
+        <p class="hint" id="p-hint">Еталон – середній ембединг обличчя. З ключем PAD_DATASET_KEY він зберігається
+          зашифрованим у data/enrolled, без ключа – лише в пам'яті сервера до перезапуску.</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- Налаштування: поточні параметри; пороги можна змінити лише в пам'яті сервера -->
+<main id="view-settings" class="view page" hidden>
+  <section class="content">
+    <div class="pagehead">
+      <div>
+        <h1>Налаштування</h1>
+        <p class="muted">Постійні значення задаються у configs/pad.yaml. Зміни на цій сторінці діють лише до перезапуску сервера.</p>
+      </div>
+    </div>
+    <div class="grid2">
+      <div class="card form">
+        <h2>Пороги рішень</h2>
+        <div class="g2">
+          <label class="f">Поріг розпізнавання (1:N)<input id="s-rec" type="number" min="0" max="1" step="0.01"></label>
+          <label class="f">Поріг атаки (класифікатор)<input id="s-pad" type="number" min="0" max="1" step="0.01"></label>
+        </div>
+        <p class="hint">Розпізнавання: обличчя вважається особою з бази, якщо косинусна подібність не менша за поріг.
+          Атака: сеанс визнається атакою, якщо оцінка класифікатора не менша за поріг.</p>
+        <p class="hint" id="s-config"></p>
+        <div class="add-row">
+          <button class="btn primary" id="s-apply">Застосувати до перезапуску</button>
+          <button class="btn" id="s-reset">Повернути значення з конфігурації</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Модуль виявлення атак</h2>
+        <dl class="kv wrap" id="s-pad-info"></dl>
+      </div>
+      <div class="card">
+        <h2>Розпізнавання</h2>
+        <dl class="kv wrap" id="s-rec-info"></dl>
+      </div>
+      <div class="card">
+        <h2>Захист даних</h2>
+        <dl class="kv wrap" id="s-data-info"></dl>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- Підтвердження незворотної дії (видалення особи) -->
+<div class="modal" id="confirm" hidden>
+  <div class="dialog small" role="alertdialog" aria-modal="true" aria-labelledby="cf-title">
+    <div class="dialog-head"><b id="cf-title">Підтвердження</b></div>
+    <div class="dialog-text" id="cf-text"></div>
+    <div class="dialog-foot"><button class="btn" id="cf-no">Скасувати</button><button class="btn primary" id="cf-yes">Видалити</button></div>
+  </div>
+</div>
+
+<!-- Перегляд сеансу: відео запису, графік s_ref(t), s_enr(t) з курсором часу, виклики і рішення -->
+<main id="view-review" class="view review" hidden>
+  <aside class="side">
+    <a class="btn sm back-btn" id="rv-back" href="#/record">← Назад</a>
+    <h3 class="cap">Перегляд сеансу</h3>
+    <div class="card">
+      <div class="mono rv-uid" id="rv-uid">–</div>
+      <dl class="kv rv-info" id="rv-info"></dl>
+    </div>
+    <h3 class="cap">Виклики сеансу</h3>
+    <ol class="challenges rv-challenges" id="rv-challenges"><li class="empty">–</li></ol>
+    <div class="note">Відео розшифровується лише в пам'яті сервера, на диск нічого не пишеться</div>
+  </aside>
+
+  <section class="center">
+    <div class="videobar">
+      <span class="cam-label" id="rv-title">Запис сеансу</span>
+      <span class="spacer"></span>
+      <span class="mono" id="rv-clock">0,0 / 0,0 с</span>
+    </div>
+    <div class="stage" id="rv-stage">
+      <canvas class="frame" id="rv-canvas"></canvas>
+      <div class="chip rv-chip" id="rv-chip" hidden></div>
+      <div class="rv-sim" id="rv-sim" hidden></div>
+      <div class="placeholder" id="rv-placeholder"><div id="rv-message">Завантаження…</div></div>
+    </div>
+    <div class="player">
+      <button class="btn sm play" id="rv-play" disabled title="Відтворити / пауза (пробіл)">▶ Відтворити</button>
+      <input type="range" id="rv-scrub" min="0" max="1000" value="0" disabled aria-label="Час у сеансі">
+      <span class="speed" role="group" aria-label="Швидкість">
+        <button class="btn sm" data-speed="0.5">0,5×</button><button class="btn sm on" data-speed="1">1×</button>
+      </span>
+    </div>
+    <div class="chart">
+      <div class="charthead">
+        <b>Косинусна подібність ембединга до еталона</b>
+        <span class="legend"><span><i></i>s_ref(t)</span><span><i class="dash"></i>s_enr(t)</span><span><i class="win"></i>виклик</span></span>
+      </div>
+      <canvas id="rv-chart" title="Клік – перейти до цього моменту"></canvas>
+    </div>
+  </section>
+
+  <aside class="right">
+    <h3 class="cap">Рішення модуля виявлення атак</h3>
+    <div class="decision idle" id="rv-decision">
+      <small id="rv-d-caption">–</small>
+      <strong id="rv-d-title">–</strong>
+      <div class="sub">оцінка атаки <b id="rv-d-score">–</b> · поріг <b id="rv-d-threshold">–</b></div>
+      <div class="bar"><i id="rv-d-bar"></i></div>
+      <div class="lat" id="rv-d-note"></div>
+    </div>
+    <div class="card">
+      <h4>Мітка набору даних</h4>
+      <div id="rv-truth" class="rv-truth">–</div>
+    </div>
+    <div class="card">
+      <h4>Як читати графік</h4>
+      <p class="hint">Суцільна лінія – подібність обличчя в кадрі до еталона, зафіксованого на початку сеансу,
+        пунктир – до еталона особи з бази. Сірі смуги – вікна викликів, світліші – вікна «до» і «після» виклику.
+        Під час справжнього перекриття рукою подібність падає і потім відновлюється. Вертикальна лінія – поточний кадр відео.</p>
+    </div>
+  </aside>
+</main>
+
+<!-- Подробиці інциденту: знімок обличчя, дані події, перехід до перегляду сеансу -->
+<div class="modal" id="incident" hidden>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="inc-title">
+    <div class="dialog-head"><b id="inc-title">Інцидент</b><button class="btn sm" id="inc-close">Закрити</button></div>
+    <div class="dialog-body">
+      <div class="inc-photo" id="inc-photo"></div>
+      <dl class="kv" id="inc-info"></dl>
+    </div>
+    <div class="dialog-foot" id="inc-foot"></div>
+  </div>
+</div>
 
 <datalist id="persons"></datalist>
 <datalist id="cams"></datalist>

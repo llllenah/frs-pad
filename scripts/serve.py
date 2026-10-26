@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from pad.cli import setup_console  # noqa: E402
-from pad.runtime import build_runtime, load_config  # noqa: E402
+from pad.runtime import build_runtime, load_config, resolve  # noqa: E402
 from pad.server import PadService, create_app  # noqa: E402
 from pad.storage import DatasetKeyError, load_key_if_set  # noqa: E402
 
@@ -50,7 +50,9 @@ def main() -> int:
     cfg = load_config(args.config)
     pipeline, manager = build_runtime(cfg, args.classifier)
     pipeline.warmup()
-    app = create_app(PadService(pipeline, manager, args.data, key, cfg.get("monitoring")))
+    clf_path = resolve(args.classifier or cfg.get("classifier"))
+    app = create_app(PadService(pipeline, manager, args.data, key, cfg.get("monitoring"),
+                                classifier_path=clf_path if clf_path is not None and clf_path.exists() else None))
     print(f"відкрийте http://{args.host}:{args.port}/ у Chrome або Edge")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return 0

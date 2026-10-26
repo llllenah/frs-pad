@@ -20,6 +20,14 @@ REST:
     POST /api/recordings/{name}/review   позначка «розмічено» або «очікує перевірки»
     GET  /api/stats                      FPS, час етапів і затримка рішень
     GET  /api/monitor                    база еталонів для моніторингу і журнал подій
+    GET  /api/persons                    база осіб: псевдонім, зберігання, дата реєстрації
+    DELETE /api/persons/{id}             видалити еталон особи (файл .npy.enc і пам'ять)
+    GET  /api/dashboard                  події за сьогодні, останні інциденти, FPS, кількість осіб
+    GET  /api/settings, PUT /api/settings  параметри; пороги змінюються лише в пам'яті
+    GET  /api/incidents                  журнал інцидентів (моніторинг і результати перевірок)
+    GET  /api/incidents/{id}/snapshot.jpg  знімок обличчя в момент події (лише в пам'яті сервера)
+    GET  /api/review/{uid}               перегляд сеансу: ряди, виклики, рішення, мітки часу кадрів
+    GET  /api/review/{uid}/frame/{i}.jpg кадр i сеансу (відео розшифровується лише в пам'яті)
 WebSocket /ws/stream:
     текст {"cmd": "attach", "session_id": 1} – наступні кадри йдуть у сеанс;
     текст {"cmd": "enroll", "person_id": "P01"} – реєстрація еталона за 30 кадрами;
@@ -30,6 +38,7 @@ WebSocket /ws/stream:
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import math
@@ -37,7 +46,7 @@ import re
 import struct
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -47,7 +56,7 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -56,6 +65,7 @@ from .classifiers import session_score
 from .features import FEATURE_NAMES
 from .identify import FaceGallery, MonitorSettings
 from .pipeline import enroll_embedding
+from .review import UID_RE, ReviewData, ReviewError, SessionRef, build_meta, encode_frame, find_sessions, prepare
 from .session import SessionManager, VerificationSession
 from .settings import CHALLENGE_TYPES, PadSettings
 from .storage import (SUFFIX, DecryptionError, encrypt_file, find_embedding, load_embedding,
@@ -98,6 +108,22 @@ ALERT_HOLD_S = 2.0
 #: Скільки останніх подій журналу моніторингу надсилати з кожним кадром.
 EVENTS_IN_FRAME = 12
 
+#: Знімки облич для журналу інцидентів: скільки останніх тримати (лише в пам'яті) і висота, пікселів.
+MAX_SNAPSHOTS = 50
+SNAPSHOT_HEIGHT = 112
+
+#: Кадри сеансів верифікації для перегляду: скільки останніх сеансів тримати в пам'яті,
+#: найменший інтервал між збереженими кадрами (≈ 20 кадрів/с) і найбільше кадрів на сеанс.
+MEMORY_REVIEWS = 5
+REVIEW_FRAME_GAP_S = 0.05
+REVIEW_MAX_FRAMES = 1200
+
+#: Скільки підготовлених записів (кадри JPEG) тримати в кеші перегляду.
+REVIEW_CACHE = 4
+
+#: Відповіді з біометричними даними браузер не повинен зберігати у своєму кеші на диску.
+NO_STORE = {"Cache-Control": "no-store"}
+
 
 # ----- запити REST -----
 
@@ -139,6 +165,14 @@ class ReviewRequest(BaseModel):
 
     reviewed: bool = True
     note: str = ""
+
+
+class SettingsRequest(BaseModel):
+    """Пороги, які можна змінити з вкладки «Налаштування» (лише в пам'яті до перезапуску)."""
+
+    recognition_threshold: float | None = Field(None, ge=0.0, le=1.0)
+    pad_threshold: float | None = Field(None, ge=0.0, le=1.0)
+    reset: bool = False
 
 
 # ----- запис сеансу -----
@@ -225,6 +259,8 @@ class LiveSession:
     decision: dict | None = None
     final_frame_ms: float | None = None
     origin: str = ""
+    snapshot: bytes | None = None                     # обличчя на початку сеансу (для журналу)
+    frames: list = field(default_factory=list)        # (час, JPEG) – кадри для перегляду сеансу
 
 
 @dataclass
@@ -287,6 +323,22 @@ def _r(x, digits: int = 4):
     return None if x is None or not math.isfinite(x) else round(float(x), digits)
 
 
+def face_snapshot(frame: np.ndarray, bbox, height: int = SNAPSHOT_HEIGHT) -> bytes | None:
+    """Знімок обличчя для журналу інцидентів: рамка [x, y, w, h] із запасом 25 %, JPEG."""
+    x, y, w, h = (float(v) for v in bbox[:4])
+    H, W = frame.shape[:2]
+    mx, my = 0.25 * w, 0.25 * h
+    x0, y0 = max(0, int(x - mx)), max(0, int(y - my))
+    x1, y1 = min(W, int(x + w + mx)), min(H, int(y + h + my))
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return None
+    crop = frame[y0:y1, x0:x1]
+    scale = height / crop.shape[0]
+    crop = cv2.resize(crop, (max(1, round(crop.shape[1] * scale)), height), interpolation=cv2.INTER_AREA)
+    ok, jpeg = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    return jpeg.tobytes() if ok else None
+
+
 def _stamp_of(name: str) -> str:
     """Час запису з імені теки <псевдонім>_<тип>_<РРРРММДД>_<ГГХХСС>[_n]."""
     m = re.search(r"_(\d{8}_\d{6})(?:_\d+)?$", name)
@@ -297,21 +349,37 @@ class PadService:
     """Спільний стан веб-інтерфейсу: конвеєр, сеанси, еталони, записи."""
 
     def __init__(self, pipeline, manager: SessionManager, data_dir: str | Path,
-                 key: bytes | None = None, monitoring: dict | MonitorSettings | None = None):
+                 key: bytes | None = None, monitoring: dict | MonitorSettings | None = None,
+                 classifier_path: str | Path | None = None):
         self.pipeline = pipeline
         self.manager = manager
         self.data_dir = Path(data_dir)
         self.enrolled_dir = self.data_dir / "enrolled"
         self.recordings_dir = self.data_dir / "recordings"
         self.key = key
+        self.classifier_path = str(classifier_path) if classifier_path else None
         self.memory_enrolled: dict[str, np.ndarray] = {}
+        self.memory_times: dict[str, str] = {}          # коли еталон зареєстровано через сервер
+        self.day_counts: dict[str, dict[str, int]] = {}  # лічильники подій за днями (для дашборду)
+        self.last_frame_at: float | None = None          # час останнього кадру з браузера (time.time)
+        self.started_at = datetime.now()
         self.sessions: dict[int, LiveSession] = {}
         self.stats = RunStats()
         self.monitor = (monitoring if isinstance(monitoring, MonitorSettings)
                         else MonitorSettings.from_dict(monitoring))
         self.gallery = FaceGallery(self.monitor.threshold)
         self.gallery_locked: list[str] = []
+        # пороги з конфігурації: до них повертає кнопка «Скинути» у вкладці «Налаштування»
+        self.config_thresholds = {"recognition_threshold": self.monitor.threshold,
+                                  "pad_threshold": self.manager.settings.threshold}
         self.events: deque = deque(maxlen=self.monitor.max_events)
+        self._event_ids = itertools.count(1)
+        # журнал інцидентів: знімки облич лише в пам'яті сервера, останні MAX_SNAPSHOTS
+        self.snapshots: OrderedDict[int, bytes] = OrderedDict()
+        # перегляд сеансів: завершені сеанси верифікації з кадрами в пам'яті і підготовлені записи
+        self.memory_reviews: OrderedDict[str, LiveSession] = OrderedDict()
+        self.review_cache: OrderedDict[str, ReviewData] = OrderedDict()
+        self.review_lock = threading.Lock()
         # MediaPipe і SessionManager не розраховані на паралельні виклики: кадри обробляються по одному
         self.lock = threading.RLock()
 
@@ -365,12 +433,97 @@ class PadService:
     def store_embedding(self, person_id: str, emb: np.ndarray) -> str:
         """Зберігає еталон зашифрованим (якщо задано ключ), інакше лише в пам'яті."""
         self.memory_enrolled[person_id] = emb
+        self.memory_times[person_id] = datetime.now().isoformat(timespec="seconds")
         self.gallery.add(person_id, emb)
         if self.key is None:
             return "memory"
         self.enrolled_dir.mkdir(parents=True, exist_ok=True)
         save_embedding(self.enrolled_dir / f"{person_id}.npy", emb, self.key)
         return "encrypted"
+
+    # ----- база осіб (форма 4.3) -----
+
+    def persons(self) -> dict:
+        """Особи з еталоном: псевдонім, де зберігається, дата реєстрації, чи є в базі моніторингу."""
+        rows = []
+        for p in self.participants():
+            pid, registered = p["id"], self.memory_times.get(p["id"])
+            path = find_embedding(self.enrolled_dir / f"{pid}.npy")
+            if path is not None:
+                registered = datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
+            stored = p["stored"]
+            if stored == "encrypted" and self.key is None:
+                stored = "locked"
+            rows.append({"id": pid, "stored": stored, "registered": registered})
+        return {"persons": rows, "key_set": self.key is not None, "count": len(rows)}
+
+    def delete_person(self, person_id: str) -> dict:
+        """Видаляє еталон особи: файл з data/enrolled (зашифрований і застарілий відкритий) і пам'ять."""
+        person_id = check_pseudonym(person_id, "псевдонім")
+        with self.lock:
+            files = [self.enrolled_dir / f"{person_id}.npy{SUFFIX}", self.enrolled_dir / f"{person_id}.npy"]
+            existed = [f for f in files if f.exists()]
+            if not existed and person_id not in self.memory_enrolled:
+                raise HTTPException(404, f"особу {person_id} не знайдено")
+            for f in existed:
+                f.unlink()
+            self.memory_enrolled.pop(person_id, None)
+            self.memory_times.pop(person_id, None)
+            self.reload_gallery()
+        log.info("еталон %s видалено (%d файл.)", person_id, len(existed))
+        return {"person_id": person_id, "deleted_files": len(existed)}
+
+    # ----- дашборд і налаштування -----
+
+    def dashboard(self) -> dict:
+        """Огляд для охоронця: події за сьогодні, останні інциденти, FPS, кількість осіб у базі."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        counts = {k: 0 for k in ("known", "unknown", "pad_bona_fide", "pad_attack", "pad_failed")}
+        counts.update(self.day_counts.get(today, {}))
+        fresh = self.last_frame_at is not None and time.time() - self.last_frame_at < 3.0
+        people = self.participants()
+        return jsonable({
+            "date": today, "counts": counts,
+            "incidents": [e for e in self.incidents() if e["level"] != "info"][:8],
+            "fps": round(self.stats.fps(), 1) if fresh and self.stats.frames else None,
+            "camera_active": fresh, "persons": len(people), "gallery": len(self.gallery),
+            "key_set": self.key is not None,
+            "started_at": self.started_at.isoformat(timespec="seconds"),
+            "thresholds": {"recognition": self.gallery.threshold, "pad": self.manager.settings.threshold},
+        })
+
+    def settings_view(self) -> dict:
+        st = self.manager.settings
+        clf = self.manager.classifier
+        return jsonable({
+            "recognition_threshold": self.gallery.threshold, "pad_threshold": st.threshold,
+            "config": self.config_thresholds,
+            "challenge_count": st.challenge_count, "duration_s": st.duration_s,
+            "challenge_types": [CHALLENGE_LABELS[k][0] for k in st.challenge_types],
+            "challenge_types_short": [CHALLENGE_LABELS[k][1] for k in st.challenge_types],
+            "max_retries": st.max_retries, "session_timeout_s": st.session_timeout_s,
+            "classifier_file": self.classifier_path, "classifier_version": getattr(clf, "version", "unknown"),
+            "detector": getattr(self.pipeline.detector, "name", "?"),
+            "embedder": getattr(self.pipeline.embedder, "name", "?"),
+            "search": self.gallery.backend, "confirm_frames": self.monitor.confirm_frames,
+            "event_gap_s": self.monitor.event_gap_s,
+            "encryption": {"algorithm": "AES-256-GCM", "key_set": self.key is not None},
+            "data_dir": str(self.data_dir),
+        })
+
+    def update_settings(self, req: SettingsRequest) -> dict:
+        """Змінює пороги лише в пам'яті сервера; після перезапуску діють значення з configs/pad.yaml."""
+        with self.lock:
+            rec = self.config_thresholds["recognition_threshold"] if req.reset else req.recognition_threshold
+            pad = self.config_thresholds["pad_threshold"] if req.reset else req.pad_threshold
+            if rec is not None:
+                self.monitor.threshold = float(rec)
+                self.gallery.threshold = float(rec)
+            if pad is not None:
+                self.manager.settings.threshold = float(pad)
+            log.info("пороги змінено в пам'яті: розпізнавання %s, атака %s", self.gallery.threshold,
+                     self.manager.settings.threshold)
+        return self.settings_view()
 
     def enroll_image(self, person_id: str, body: bytes) -> dict:
         person_id = check_pseudonym(person_id, "псевдонім")
@@ -467,6 +620,7 @@ class PadService:
         if live.session.state.is_final or live.cancelled:
             return
         live.cancelled = True
+        live.frames = []
         if live.recorder is not None:
             live.recorder.abort()
             live.recorder = None
@@ -493,9 +647,18 @@ class PadService:
         self.stats.decisions.append({"session_id": s.id, "decision": dec["decision"], "score": dec["score"],
                                      **latency, "duration_s": dec["explanation"]["duration_s"]})
         log.info("сеанс %s: %s, оцінка %s", live.code, dec["decision"], dec["score"])
-        if live.origin == "monitor":
+        if live.mode == "verify":
+            # кадри сеансу лишаються в пам'яті для перегляду з журналу інцидентів
+            review = None
+            if live.frames:
+                self.memory_reviews[live.code] = live
+                while len(self.memory_reviews) > MEMORY_REVIEWS:
+                    _, old = self.memory_reviews.popitem(last=False)
+                    old.frames = []
+                review = live.code
             self._event("pad", s.claimed_person_id, None, decision=dec["decision"], score=dec["score"],
-                        code=live.code)
+                        code=live.code, origin=live.origin, review=review,
+                        reason=dec["explanation"].get("reason"), snapshot=live.snapshot)
         if live.recorder is not None:
             record = {"metadata": live.metadata, "settings": live.manager.settings.to_dict(),
                       "embedder": getattr(self.pipeline.embedder, "name", "?"), "decision": dec,
@@ -627,6 +790,7 @@ class PadService:
         frame = cv2.imdecode(np.frombuffer(payload, np.uint8), cv2.IMREAD_COLOR) if payload else None
         if frame is None:
             return {"type": "frame_error", "message": "кадр не розпізнано (очікується JPEG)"}
+        self.last_frame_at = time.time()
         if conn.monitor:
             with self.lock:
                 return jsonable(self._monitor_frame(conn, t, frame))
@@ -640,6 +804,8 @@ class PadService:
                 if live.recorder is not None:
                     live.recorder.write(frame, t)
                     live.metadata["conditions"]["resolution"] = f"{frame.shape[1]}x{frame.shape[0]}"
+                elif live.mode == "verify":
+                    self._keep_frame(live, frame, t, data)
                 tp = time.perf_counter()
                 live.manager.on_frame(live.session.id, data)
                 session_ms = (time.perf_counter() - tp) * 1000
@@ -662,6 +828,17 @@ class PadService:
             if live is not None:
                 msg["session"] = self.snapshot(live)
         return jsonable(msg)
+
+    def _keep_frame(self, live: LiveSession, frame: np.ndarray, t: float, data) -> None:
+        """Кадр сеансу верифікації для перегляду (зменшений JPEG у пам'яті) і знімок обличчя."""
+        if live.snapshot is None and data.embedding is not None and self.pipeline.last_box is not None \
+                and data.det_score >= self.manager.settings.min_det_score:
+            live.snapshot = face_snapshot(frame, self.pipeline.last_box.bbox)
+        if len(live.frames) >= REVIEW_MAX_FRAMES:
+            return
+        if live.frames and t - live.frames[-1][0] < REVIEW_FRAME_GAP_S:
+            return
+        live.frames.append((t, encode_frame(frame)))
 
     def _check(self, data) -> dict:
         """Блок «Перевірка виконання»: кількість точок і кути голови."""
@@ -713,14 +890,51 @@ class PadService:
             "threshold": self.gallery.threshold, "backend": self.gallery.backend,
             "ids": self.gallery.ids, "locked": self.gallery_locked,
             "key_set": self.key is not None, "settings": self.monitor.to_dict(),
-            "events": list(self.events)[::-1],
+            "events": self.incidents(),
         })
 
-    def _event(self, kind: str, person_id: str | None, similarity: float | None, **extra) -> dict:
-        ev = {"time": datetime.now().strftime("%H:%M:%S"), "kind": kind, "person_id": person_id,
-              "similarity": similarity, **extra}
+    def _event(self, kind: str, person_id: str | None, similarity: float | None,
+               snapshot: bytes | None = None, **extra) -> dict:
+        """Запис журналу інцидентів.
+
+        level: alarm – невідома особа або атака, warn – перевірку не пройдено,
+        ok – справжнє подання, info – відома особа в кадрі. Знімок обличчя
+        зберігається лише в пам'яті сервера (останні MAX_SNAPSHOTS).
+        """
+        now = datetime.now()
+        ev_id = next(self._event_ids)
+        if kind == "pad":
+            level = {"attack": "alarm", "failed": "warn", "bona_fide": "ok"}.get(extra.get("decision"), "warn")
+        else:
+            level = "alarm" if kind == "unknown" else "info"
+        if snapshot is not None:
+            self.snapshots[ev_id] = snapshot
+            while len(self.snapshots) > MAX_SNAPSHOTS:
+                self.snapshots.popitem(last=False)
+        ev = {"id": ev_id, "time": now.strftime("%H:%M:%S"), "date": now.strftime("%Y-%m-%d"), "kind": kind,
+              "level": level, "person_id": person_id, "similarity": similarity, **extra}
         self.events.append(ev)
+        # лічильники за день не обмежені довжиною журналу (у журналі – останні max_events подій)
+        day = self.day_counts.setdefault(ev["date"], {})
+        name = f"pad_{extra.get('decision')}" if kind == "pad" else kind
+        day[name] = day.get(name, 0) + 1
         return ev
+
+    def incidents(self, limit: int | None = None) -> list[dict]:
+        """Журнал інцидентів, найновіші першими; snapshot – чи є знімок у пам'яті,
+        review – сеанс, який ще можна переглянути (кадри в пам'яті сервера)."""
+        events = list(self.events)
+        if limit is not None:
+            events = events[-limit:]
+        return jsonable([{**ev, "snapshot": ev["id"] in self.snapshots,
+                          "review": ev.get("review") if ev.get("review") in self.memory_reviews else None}
+                         for ev in events[::-1]])
+
+    def incident_snapshot(self, ev_id: int) -> bytes:
+        jpeg = self.snapshots.get(ev_id)
+        if jpeg is None:
+            raise HTTPException(404, "знімка немає: зберігаються лише останні знімки і лише до перезапуску сервера")
+        return jpeg
 
     def _monitor_frame(self, conn: StreamConnection, t: float, frame: np.ndarray) -> dict:
         """Кадр моніторингу: усі обличчя, найближчий еталон кожного, журнал і сповіщення.
@@ -738,7 +952,7 @@ class PadService:
         timings["total_ms"] += timings["search_ms"]
         self.stats.add(timings, None)
 
-        faces, seen = [], {}
+        faces, seen, boxes = [], {}, {}
         for (box, _), m in zip(found, matches):
             faces.append({"box": [float(v) for v in box.bbox], "det_score": float(box.score),
                           "person_id": m.person_id, "similarity": m.similarity, "known": m.known,
@@ -747,6 +961,7 @@ class PadService:
             sim = m.similarity if math.isfinite(m.similarity) else None
             if key not in seen or (sim is not None and (seen[key] is None or sim > seen[key])):
                 seen[key] = sim
+                boxes[key] = box.bbox
 
         for key, entry in list(conn.presence.items()):
             if key not in seen:
@@ -762,7 +977,9 @@ class PadService:
             if entry["streak"] >= st.confirm_frames and not entry["logged"]:
                 entry["logged"] = True
                 known = key != "unknown"
-                self._event("known" if known else "unknown", key if known else None, sim)
+                self._event("known" if known else "unknown", key if known else None, sim,
+                            snapshot=face_snapshot(frame, boxes[key]),
+                            nearest=None if known else next((f["nearest"] for f in faces if not f["known"]), None))
                 if not known:
                     log.warning("моніторинг: невідома особа, подібність %s", sim)
 
@@ -782,7 +999,7 @@ class PadService:
                           "det_score": faces[0]["det_score"] if faces else 0.0, "embedding": bool(faces)},
                 "monitor": {"faces": faces, "alert": alert, "threshold": self.gallery.threshold,
                             "gallery": len(self.gallery),
-                            "events": list(self.events)[-EVENTS_IN_FRAME:][::-1]}}
+                            "events": self.incidents(EVENTS_IN_FRAME)}}
 
     # ----- записи набору даних -----
 
@@ -792,13 +1009,26 @@ class PadService:
         dirs = [d for d in self.recordings_dir.iterdir() if d.is_dir()]
         return sorted(dirs, key=lambda d: (_stamp_of(d.name) or f"{d.stat().st_mtime:020.3f}", d.name))
 
+    def _sessions(self) -> list[SessionRef]:
+        """Сеанси записів: живі записи і сеанси імпортованих записів (підтеки <запис>_sNN)."""
+        return find_sessions(self._recording_dirs())
+
+    def _find_session(self, uid: str) -> SessionRef:
+        if not UID_RE.match(uid or ""):
+            raise HTTPException(404, f"запис {uid} не знайдено")
+        ref = next((r for r in self._sessions() if r.uid == uid), None)
+        if ref is None:
+            raise HTTPException(404, f"запис {uid} не знайдено")
+        return ref
+
     def recordings(self) -> dict:
         if self.key is None:
             raise HTTPException(409, "записи зашифровано: задайте PAD_DATASET_KEY і перезапустіть сервер")
         rows = []
-        for i, d in enumerate(self._recording_dirs(), start=1):
-            row = {"name": d.name, "id": f"S-{i:04d}", "participant": d.name.split("_")[0]}
-            enc = d / ("session.json" + SUFFIX)
+        for i, ref in enumerate(self._sessions(), start=1):
+            row = {"name": ref.uid, "id": f"S-{i:04d}", "participant": ref.uid.split("_")[0],
+                   "layout": ref.layout, "recording": ref.recording.name, "reviewable": False}
+            enc = ref.annotation
             if not enc.exists():
                 row["status"] = "incomplete"   # сеанс перервано: є лише video.mp4.enc
                 rows.append(row)
@@ -814,6 +1044,10 @@ class PadService:
             attempts = expl.get("attempts") or [[]]
             cond = meta.get("conditions", {})
             reviewed = bool(rec.get("annotation", {}).get("reviewed"))
+            series_t = (expl.get("series") or {}).get("t") or []
+            duration = expl.get("duration_s")
+            if duration is None and len(series_t) > 1:
+                duration = series_t[-1] - series_t[0]
             row.update({
                 "participant": meta.get("participant", row["participant"]),
                 "presentation_type": meta.get("presentation_type"),
@@ -823,11 +1057,14 @@ class PadService:
                 "attempts": len(expl.get("attempts") or []),
                 "lighting": cond.get("lighting"), "resolution": cond.get("resolution"),
                 "webcam": cond.get("webcam"),
-                "duration_s": expl.get("duration_s"), "decision": dec.get("decision"),
+                "duration_s": duration, "decision": dec.get("decision"),
                 "score": dec.get("score"),
                 "status": "failed" if dec.get("decision") == "failed" else ("reviewed" if reviewed else "pending"),
                 "note": rec.get("annotation", {}).get("note", ""),
-                "interface": meta.get("interface", "cli"),
+                "interface": meta.get("interface", "remote" if ref.layout == "imported" else "cli"),
+                "session_index": meta.get("session_index"),
+                "performed": sum(bool(c.get("performed")) for c in attempts[-1]),
+                "reviewable": True,
             })
             rows.append(row)
         complete = [r for r in rows if r.get("presentation_type")]
@@ -845,10 +1082,8 @@ class PadService:
     def review(self, name: str, req: ReviewRequest) -> dict:
         if self.key is None:
             raise HTTPException(409, "записи зашифровано: задайте PAD_DATASET_KEY")
-        folder = next((d for d in self._recording_dirs() if d.name == name), None)
-        if folder is None:
-            raise HTTPException(404, f"запис {name} не знайдено")
-        enc = folder / ("session.json" + SUFFIX)
+        ref = self._find_session(name)
+        enc = ref.annotation
         if not enc.exists():
             raise HTTPException(409, "сеанс не завершено, анотації немає")
         with self.lock:
@@ -856,8 +1091,69 @@ class PadService:
             rec["annotation"] = {"reviewed": req.reviewed, "note": req.note.strip(),
                                  "reviewed_at": datetime.now().isoformat(timespec="seconds")}
             data = json.dumps(rec, ensure_ascii=False, indent=1, default=_json_default).encode("utf-8")
-            write_encrypted(folder / "session.json", data, self.key)
+            write_encrypted(ref.folder / "session.json", data, self.key)
         return {"name": name, "status": "reviewed" if req.reviewed else "pending"}
+
+    # ----- перегляд сеансу -----
+
+    def _memory_review(self, uid: str) -> tuple[dict, list[bytes]] | None:
+        """Завершений сеанс верифікації, кадри якого ще в пам'яті сервера."""
+        with self.lock:
+            live = self.memory_reviews.get(uid)
+            if live is None or not live.frames or live.decision is None:
+                return None
+            t0 = live.session.t_started or 0.0
+            frames = list(live.frames)
+            record = {"metadata": {"claimed_identity": live.session.claimed_person_id, "interface": "web",
+                                   "source": "monitor" if live.origin == "monitor" else "verify"},
+                      "settings": live.manager.settings.to_dict(), "decision": live.decision}
+        meta = build_meta(record, [t - t0 for t, _ in frames], uid=uid, layout="memory",
+                          frame_size=None)
+        h, w = cv2.imdecode(np.frombuffer(frames[0][1], np.uint8), cv2.IMREAD_GRAYSCALE).shape[:2]
+        meta["frames"].update(width=w, height=h)
+        meta["code"] = live.code
+        return meta, [jpeg for _, jpeg in frames]
+
+    def _prepared(self, uid: str) -> ReviewData:
+        """Запис з data/recordings, підготовлений до перегляду (кеш LRU у пам'яті)."""
+        if self.key is None:
+            raise HTTPException(409, "записи зашифровано: щоб переглянути сеанс, задайте PAD_DATASET_KEY "
+                                     "і перезапустіть сервер")
+        ref = self._find_session(uid)
+        with self.review_lock:
+            data = self.review_cache.get(uid)
+            if data is not None:
+                self.review_cache.move_to_end(uid)
+                return data
+            try:
+                data = prepare(ref, self.key, self.manager.classifier, self.manager.settings.threshold)
+            except DecryptionError as exc:
+                raise HTTPException(409, f"запис не розшифровано: інший ключ або файл пошкоджено ({exc})") from exc
+            except ReviewError as exc:
+                raise HTTPException(exc.status, str(exc)) from exc
+            self.review_cache[uid] = data
+            while len(self.review_cache) > REVIEW_CACHE:
+                self.review_cache.popitem(last=False)
+            log.info("перегляд %s: %d кадрів у пам'яті", uid, len(data.frames))
+            return data
+
+    def review_session(self, uid: str) -> dict:
+        mem = self._memory_review(uid)
+        if mem is not None:
+            return jsonable(mem[0])
+        return jsonable(self._prepared(uid).meta)
+
+    def review_frame(self, uid: str, index: int) -> bytes:
+        with self.lock:
+            live = self.memory_reviews.get(uid)
+            if live is not None and live.frames:
+                if not 0 <= index < len(live.frames):
+                    raise HTTPException(404, "кадру з таким номером немає")
+                return live.frames[index][1]
+        frames = self._prepared(uid).frames
+        if not 0 <= index < len(frames):
+            raise HTTPException(404, "кадру з таким номером немає")
+        return frames[index]
 
 
 # ----- застосунок FastAPI -----
@@ -916,6 +1212,48 @@ def create_app(service: PadService) -> FastAPI:
     def get_monitor():
         with service.lock:
             return service.monitor_status()
+
+    @app.get("/api/persons")
+    def get_persons():
+        with service.lock:
+            return service.persons()
+
+    @app.delete("/api/persons/{person_id}")
+    def delete_person(person_id: str):
+        return service.delete_person(person_id)
+
+    @app.get("/api/dashboard")
+    def get_dashboard():
+        with service.lock:
+            return service.dashboard()
+
+    @app.get("/api/settings")
+    def get_settings():
+        with service.lock:
+            return service.settings_view()
+
+    @app.put("/api/settings")
+    def put_settings(req: SettingsRequest):
+        return service.update_settings(req)
+
+    @app.get("/api/incidents")
+    def get_incidents():
+        with service.lock:
+            return service.incidents()
+
+    @app.get("/api/incidents/{event_id}/snapshot.jpg")
+    def get_incident_snapshot(event_id: int):
+        with service.lock:
+            jpeg = service.incident_snapshot(event_id)
+        return Response(jpeg, media_type="image/jpeg", headers=NO_STORE)
+
+    @app.get("/api/review/{uid}")
+    def get_review(uid: str):
+        return service.review_session(uid)
+
+    @app.get("/api/review/{uid}/frame/{index}.jpg")
+    def get_review_frame(uid: str, index: int):
+        return Response(service.review_frame(uid, index), media_type="image/jpeg", headers=NO_STORE)
 
     @app.websocket("/ws/stream")
     async def stream(ws: WebSocket):

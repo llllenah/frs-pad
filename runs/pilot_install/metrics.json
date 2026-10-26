@@ -1,0 +1,177 @@
+{
+  "source": "data/features.csv",
+  "seed": 42,
+  "config": {
+    "protocol": "intra_tool",
+    "seed": 42,
+    "split": "leave-one-subject-out",
+    "models": [
+      "threshold",
+      "logistic"
+    ],
+    "model": {
+      "C": 1.0,
+      "threshold_feature": "s_ref_during_min"
+    },
+    "target_bpcer": 0.05,
+    "synthetic": {
+      "n_subjects": 6,
+      "sessions_per_class": 8
+    }
+  },
+  "split": "leave-one-subject-out",
+  "split_hash": "c738ac34ed294bbc",
+  "subjects": [
+    "P01",
+    "P02",
+    "P03",
+    "P04"
+  ],
+  "metrics": {
+    "threshold": {
+      "session": {
+        "operating_point": {
+          "apcer": 0.5757575757575758,
+          "apcer_per_species": {
+            "inswapper_128_offline": 0.5757575757575758
+          },
+          "bpcer": 0.38235294117647056,
+          "acer": 0.4790552584670232,
+          "note": "порогу τ кожного фолду відповідає BPCER <= 0.05 на валідації"
+        },
+        "bpcer20": 1.0,
+        "eer": 0.5151515151515151,
+        "auc": 0.4786096256684493,
+        "n_bona_fide": 34,
+        "n_attack": 33
+      },
+      "challenge": {
+        "eer": 0.5416666666666667,
+        "auc": 0.46572871572871577,
+        "bpcer20": 0.974025974025974
+      },
+      "per_challenge_type": {
+        "cover_left": {
+          "eer": 0.4444444444444444,
+          "auc": 0.5982905982905983,
+          "n": 22
+        },
+        "cover_mouth": {
+          "eer": 0.5,
+          "auc": 0.45238095238095233,
+          "n": 41
+        },
+        "cover_right": {
+          "eer": 0.5384615384615384,
+          "auc": 0.489010989010989,
+          "n": 27
+        },
+        "hand_swipe": {
+          "eer": 0.625,
+          "auc": 0.4375,
+          "n": 16
+        },
+        "turn_head": {
+          "eer": 0.7619047619047619,
+          "auc": 0.2445887445887446,
+          "n": 43
+        }
+      }
+    },
+    "logistic": {
+      "session": {
+        "operating_point": {
+          "apcer": 0.0,
+          "apcer_per_species": {
+            "inswapper_128_offline": 0.0
+          },
+          "bpcer": 0.029411764705882353,
+          "acer": 0.014705882352941176,
+          "note": "порогу τ кожного фолду відповідає BPCER <= 0.05 на валідації"
+        },
+        "bpcer20": 0.0,
+        "eer": 0.0,
+        "auc": 1.0,
+        "n_bona_fide": 34,
+        "n_attack": 33
+      },
+      "challenge": {
+        "eer": 0.0,
+        "auc": 1.0,
+        "bpcer20": 0.0
+      },
+      "per_challenge_type": {
+        "cover_left": {
+          "eer": 0.0,
+          "auc": 1.0,
+          "n": 22
+        },
+        "cover_mouth": {
+          "eer": 0.0,
+          "auc": 1.0,
+          "n": 41
+        },
+        "cover_right": {
+          "eer": 0.0,
+          "auc": 1.0,
+          "n": 27
+        },
+        "hand_swipe": {
+          "eer": 0.0,
+          "auc": 1.0,
+          "n": 16
+        },
+        "turn_head": {
+          "eer": 0.0,
+          "auc": 1.0,
+          "n": 43
+        }
+      }
+    }
+  },
+  "final_models": {
+    "threshold": {
+      "path": "runs\\pilot_install\\model_threshold.json",
+      "recommended_threshold": 0.9999999999686011
+    },
+    "logistic": {
+      "path": "runs\\pilot_install\\model_logistic.json",
+      "recommended_threshold": 0.39473257352462554,
+      "onnx": "runs\\pilot_install\\model_logistic.onnx",
+      "top_features": [
+        [
+          "s_enr_before_mean",
+          -2.1293553306614625
+        ],
+        [
+          "s_ref_before_mean",
+          1.7438379855347128
+        ],
+        [
+          "s_enr_after_mean",
+          -1.4859145475589541
+        ],
+        [
+          "s_ref_during_mean",
+          1.286687161700519
+        ],
+        [
+          "s_enr_during_mean",
+          -1.249881761602422
+        ],
+        [
+          "s_ref_after_mean",
+          0.991104780785176
+        ],
+        [
+          "s_enr_during_var",
+          -0.7501380104829207
+        ],
+        [
+          "s_enr_before_min",
+          -0.5180715749663829
+        ]
+      ]
+    }
+  }
+}

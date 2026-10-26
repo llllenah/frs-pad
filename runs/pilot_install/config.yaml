@@ -1,0 +1,12 @@
+# Конфігурація експерименту на пілотному наборі (протокол в межах одного інструмента).
+protocol: intra_tool
+seed: 42
+split: leave-one-subject-out
+models: [threshold, logistic]
+model:
+  C: 1.0                         # обернена сила L2-регуляризації
+  threshold_feature: s_ref_during_min
+target_bpcer: 0.05               # поріг τ підбирається так, щоб BPCER на валідації не перевищував 5 %
+synthetic:                       # лише для --synthetic
+  n_subjects: 6
+  sessions_per_class: 8
