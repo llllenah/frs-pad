@@ -817,6 +817,7 @@ class PadService:
             msg = {"type": "frame", "t": t, "size": list(data.size),
                    "face": None if data.face is None else np.round(data.face).astype(int).ravel(),
                    "hand": None if data.hand is None else np.round(data.hand).astype(int).ravel(),
+                   "hands": [np.round(h).astype(int).ravel() for h in (data.hands or [])],
                    "box": None, "timings": {k: round(v, 1) for k, v in timings.items()},
                    "fps": round(self.stats.fps(), 1),
                    "pad_ms": None if session_ms is None else round(timings["landmarks_ms"] + session_ms, 1),
@@ -851,6 +852,7 @@ class PadService:
                 pass
         return {"face_points": 0 if data.face is None else len(data.face),
                 "hand_points": 0 if data.hand is None else len(data.hand),
+                "hands": len(data.hands) if data.hands else (0 if data.hand is None else 1),
                 "yaw": yaw, "pitch": pitch, "det_score": data.det_score,
                 "embedding": data.embedding is not None}
 
@@ -993,10 +995,10 @@ class PadService:
             if unknown["logged"] and t - unknown["last"] <= ALERT_HOLD_S:
                 alert = {"count": unknown["count"], "similarity": unknown["similarity"]}
         h, w = frame.shape[:2]
-        return {"type": "frame", "t": t, "size": [w, h], "face": None, "hand": None, "box": None,
+        return {"type": "frame", "t": t, "size": [w, h], "face": None, "hand": None, "hands": [], "box": None,
                 "timings": {k: round(v, 1) for k, v in timings.items()},
                 "fps": round(self.stats.fps(), 1), "pad_ms": None,
-                "check": {"face_points": 0, "hand_points": 0, "yaw": None, "pitch": None,
+                "check": {"face_points": 0, "hand_points": 0, "hands": 0, "yaw": None, "pitch": None,
                           "det_score": faces[0]["det_score"] if faces else 0.0, "embedding": bool(faces)},
                 "monitor": {"faces": faces, "alert": alert, "threshold": self.gallery.threshold,
                             "gallery": len(self.gallery),
@@ -1220,6 +1222,9 @@ def create_app(service: PadService, allowed_hosts: set[str] | None = None) -> Fa
                 return JSONResponse({"detail": "запит завеликий"}, 413, headers=SECURITY_HEADERS)
         response = await call_next(request)
         response.headers.update(SECURITY_HEADERS)
+        if request.url.path.startswith("/static/"):
+            # браузер перевіряє ETag щоразу і після оновлення прототипу не бере старі app.js і style.css з кешу
+            response.headers.setdefault("Cache-Control", "no-cache")
         return response
 
     @app.get("/", include_in_schema=False)

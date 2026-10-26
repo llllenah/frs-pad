@@ -53,8 +53,10 @@ class FramePipeline:
         timings["detect_ms"] = (t1 - t0) * 1000
 
         face = hand = None
+        found: list[np.ndarray] = []
         if landmarks:
-            face, hand = self.verifier.detect(frame_bgr, hands=hands)
+            face, found = self.verifier.detect_all(frame_bgr, hands=hands)
+            hand = self.verifier.closest_hand(found, face)
         t2 = time.perf_counter()
         timings["landmarks_ms"] = (t2 - t1) * 1000
 
@@ -77,7 +79,7 @@ class FramePipeline:
 
         h, w = frame_bgr.shape[:2]
         return FrameData(t=t, embedding=embedding, det_score=score, face=face, hand=hand,
-                         size=(w, h)), timings
+                         hands=found or None, size=(w, h)), timings
 
     def faces(self, frame_bgr: np.ndarray, min_score: float = 0.9,
               max_faces: int = 5) -> tuple[list[tuple[FaceBox, np.ndarray]], dict]:

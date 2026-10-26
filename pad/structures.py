@@ -21,7 +21,8 @@ class FrameData:
     embedding: np.ndarray | None = None      # L2-нормований ембединг (128 значень)
     det_score: float = 0.0                   # упевненість детекції обличчя
     face: np.ndarray | None = None           # (468, 2) точки Face Mesh
-    hand: np.ndarray | None = None           # (21, 2) точки Hands
+    hand: np.ndarray | None = None           # (21, 2) точки Hands (кисть, найближча до обличчя)
+    hands: list[np.ndarray] | None = None    # усі знайдені кисті (для накладання на відео)
     size: tuple[int, int] = (1280, 720)      # (ширина, висота) кадру
 
 

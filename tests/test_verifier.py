@@ -212,3 +212,36 @@ def test_head_turn_continues_when_profile_face_is_lost(verifier):
     assert run(3, 4, 2)          # 3 + 2 кадри з кутом, між ними профіль без точок – серія не перервана
     assert not run(1, 6)         # один кадр з кутом і вихід з кадру виклик не зараховують
     assert not run(0, 8)
+
+
+# ----- дві кисті в кадрі -----
+
+def test_closest_hand_of_two(verifier):
+    face = synthetic_face()
+    near = hand_over_face(face, "left", 1.3)
+    far = synthetic_hand((100, 100), 80, 120)
+    assert verifier.closest_hand([far, near], face) is near
+    assert verifier.closest_hand([far, near], None) is far
+    assert verifier.closest_hand([], face) is None
+
+
+def test_pipeline_keeps_both_hands_for_overlay():
+    """Конвеєр віддає всі кисті для накладання, а виклик перевіряється за найближчою до обличчя."""
+    from pad.pipeline import FramePipeline
+
+    face = synthetic_face()
+    near = hand_over_face(face, "mouth", 1.3)
+    far = synthetic_hand((100, 600), 80, 120)
+
+    class TwoHands(ChallengeVerifier):
+        def detect_all(self, frame_bgr, hands=True):
+            return face, ([far, near] if hands else [])
+
+    det = type("Det", (), {"detect": lambda self, frame: []})()
+    emb = type("Emb", (), {"input_size": 112, "embed": lambda self, img: np.ones(128, np.float32)})()
+    pipeline = FramePipeline(det, emb, TwoHands())
+    frame = np.zeros((720, 1280, 3), np.uint8)
+    data, _ = pipeline.process(frame, 0.0)
+    assert data.hand is near and len(data.hands) == 2
+    data, _ = pipeline.process(frame, 0.1, hands=False)
+    assert data.hand is None and data.hands is None

@@ -204,7 +204,6 @@ function openIncident(id) {
       ['Особа', e.kind === 'unknown' ? 'невідома' : e.person_id], ['Подібність', fmt(e.similarity)]);
     if (e.kind === 'unknown' && e.nearest) rows.push(['Найближчий еталон', e.nearest]);
   }
-  rows.push(['Рівень', LEVEL_TEXT[e.level] || '–']);
   $('#inc-info').innerHTML = rows.map(([k, x]) => `<dt>${esc(k)}</dt><dd>${esc(x)}</dd>`).join('');
   let foot = '';
   if (e.review) foot = `<button class="btn primary" data-review-open="${esc(e.review)}">Переглянути сеанс</button>`;
@@ -271,7 +270,9 @@ async function api(path, opts = {}) {
   try { data = await r.json(); } catch (_) { /* тіло без JSON */ }
   if (!r.ok) {
     const d = data && data.detail;
-    throw new Error(typeof d === 'string' ? d : Array.isArray(d) ? d.map(x => x.msg).join('; ') : `HTTP ${r.status}`);
+    // помилки перевірки FastAPI (422) приходять англійською: показується лише назва поля
+    const field = x => (x.loc && x.loc.length ? `некоректне значення поля «${x.loc[x.loc.length - 1]}»` : 'некоректні дані');
+    throw new Error(typeof d === 'string' ? d : Array.isArray(d) ? d.map(field).join('; ') : `помилка сервера (код ${r.status})`);
   }
   return data;
 }
@@ -285,6 +286,15 @@ function toast(msg, kind = '') {
 }
 
 // ----- камера -----
+
+// причини помилки getUserMedia без англійських повідомлень браузера
+const CAM_ERRORS = {
+  NotAllowedError: 'доступ до камери заборонено в налаштуваннях браузера',
+  NotFoundError: 'камеру не знайдено',
+  NotReadableError: 'камеру використовує інша програма',
+  OverconstrainedError: 'вибрана камера не підтримує потрібну роздільність',
+  SecurityError: 'браузер дозволяє камеру лише для localhost або HTTPS',
+};
 
 const Cam = {
   video: null, grab: document.createElement('canvas'), stream: null, active: false, label: '', deviceId: '',
@@ -306,7 +316,7 @@ const Cam = {
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({ video, audio: false });
     } catch (e) {
-      toast(`Камера недоступна: ${e.message}`, 'err');
+      toast(`Камера недоступна: ${CAM_ERRORS[e.name] || e.message}`, 'err');
       cameraChanged();
       return;
     }
@@ -324,7 +334,14 @@ const Cam = {
     this.video.srcObject = null;
     this.video.src = URL.createObjectURL(file);
     this.video.loop = true;
-    await this.video.play();
+    try {
+      await this.video.play();
+    } catch (e) {
+      toast('Файл не вдалося відтворити: браузер не підтримує цей формат відео', 'err');
+      this.stop();
+      cameraChanged();
+      return;
+    }
     this.label = `Файл: ${file.name}`;
     this.deviceId = 'file';
     this.active = true;
@@ -623,22 +640,27 @@ function drawFrame(canvas, m, label) {
       ctx.fillText(label, lx + pad, ly - pad);
     }
   }
-  if (m.hand) {
-    const p = i => [X(m.hand[2 * i]), m.hand[2 * i + 1]];
-    const bones = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11], [11, 12],
-      [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [17, 18], [18, 19], [19, 20], [0, 17]];
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth = Math.max(2, 3 * k);
+  // усі знайдені кисті (до двох); виклик перевіряється за кистю, найближчою до обличчя
+  const hands = m.hands && m.hands.length ? m.hands : (m.hand ? [m.hand] : []);
+  for (const hand of hands) drawHand(ctx, hand, X, k);
+}
+
+const HAND_BONES = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11], [11, 12],
+  [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [17, 18], [18, 19], [19, 20], [0, 17]];
+
+function drawHand(ctx, hand, X, k) {
+  const p = i => [X(hand[2 * i]), hand[2 * i + 1]];
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = Math.max(2, 3 * k);
+  ctx.beginPath();
+  for (const [a, b] of HAND_BONES) { ctx.moveTo(...p(a)); ctx.lineTo(...p(b)); }
+  ctx.stroke();
+  ctx.fillStyle = '#1c1c1c';
+  for (let i = 0; i < 21; i++) {
     ctx.beginPath();
-    for (const [a, b] of bones) { ctx.moveTo(...p(a)); ctx.lineTo(...p(b)); }
+    ctx.arc(...p(i), Math.max(3, 6 * k), 0, 2 * Math.PI);
+    ctx.fill();
     ctx.stroke();
-    ctx.fillStyle = '#1c1c1c';
-    for (let i = 0; i < 21; i++) {
-      ctx.beginPath();
-      ctx.arc(...p(i), Math.max(3, 6 * k), 0, 2 * Math.PI);
-      ctx.fill();
-      ctx.stroke();
-    }
   }
 }
 
@@ -719,7 +741,15 @@ function drawChart(canvas, s) {
   }
   ctx.textBaseline = 'top';
   for (let t = Math.ceil(tMin / 2) * 2; t <= tMax; t += 2) ctx.fillText(`${t} с`, x(t) - 8, B + 5);
-  if (!s) return;
+  if (!s) {
+    ctx.fillStyle = '#888';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '13.5px "Segoe UI", Arial, sans-serif';
+    ctx.fillText('графік з\'явиться після початку сеансу', (L + R) / 2, (T + B) / 2);
+    ctx.textAlign = 'left';
+    return;
+  }
   // вікна викликів: «під час» – сіре тло, «до» і «після» – світліше
   const st = s.settings;
   for (const [a, b] of s.spans) {
@@ -846,7 +876,7 @@ function renderVerify() {
   if (s) att.textContent = `спроба ${s.status.attempt} з ${s.status.max_attempts}: попередній набір не виконано`;
   const c = f ? f.check : null;
   $('#c-face').textContent = c && c.face_points ? `${c.face_points} т.` : '–';
-  $('#c-hand').textContent = c && c.hand_points ? `${c.hand_points} т.` : '–';
+  $('#c-hand').textContent = c && c.hand_points ? (c.hands > 1 ? `${c.hands} кисті × ${c.hand_points} т.` : `${c.hand_points} т.`) : '–';
   $('#c-pose').textContent = c && c.yaw != null ? `${Math.round(c.yaw)}° / ${Math.round(c.pitch)}°` : '–';
   $('#c-det').textContent = c ? (c.embedding ? fmt(c.det_score) : 'немає') : '–';
 
@@ -1273,7 +1303,7 @@ const Review = {
       const att = Math.max(...chs.map(c => c.attempt)) > 1 ? `спроба ${cur.attempt}, ` : '';
       return { c: cur, text: `${att}виклик ${same.indexOf(cur) + 1} з ${same.length}: ${cur.name} · ${cur.performed ? 'виконано ✓' : 'не виконано ×'}` };
     }
-    if (!chs.length || tau < chs[0].t_start) return { c: null, text: 'Фіксація еталона сеансу: дивитися в камеру' };
+    if (!chs.length || tau < chs[0].t_start) return { c: null, text: 'Фіксація еталона сеансу: погляд у камеру' };
     if (tau > chs[chs.length - 1].t_end) return { c: null, text: 'Вікно «після» останнього виклику' };
     return { c: null, text: 'Між викликами' };
   },
@@ -1674,10 +1704,14 @@ function route() {
   const rv = location.hash.match(/^#\/review\/([^/]+)$/);
   App.view = rv ? 'review' : VIEWS[location.hash] || 'verify';
   for (const v of ALL_VIEWS) $(`#view-${v}`).hidden = App.view !== v;
+  // на вузькому екрані сторінка прокручується цілком: нова вкладка відкривається з початку
+  if (prev !== App.view) window.scrollTo(0, 0);
   if (App.view === 'dashboard') refreshDashboard();
   if (App.view === 'persons') refreshPersons();
   if (App.view === 'settings') refreshSettings();
-  $$('.topbar nav a[data-view]').forEach(a => a.classList.toggle('active', a.dataset.view === App.view));
+  // перегляд сеансу підсвічує вкладку, з якої його відкрито
+  const tab = App.view === 'review' ? VIEWS[App.lastHash] || 'verify' : App.view;
+  $$('.topbar nav a[data-view]').forEach(a => a.classList.toggle('active', a.dataset.view === tab));
   closeIncident();
   if (App.view === 'review') {
     $('#rv-back').href = App.lastHash;

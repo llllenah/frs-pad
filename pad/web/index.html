@@ -228,11 +228,13 @@
         <h2>Параметри сеансу</h2>
         <div class="g3">
           <label class="f">Учасник (псевдонім)<input id="r-participant" list="persons" value="P01" spellcheck="false" autocomplete="off"></label>
-          <label class="f">Камера<input id="r-webcam" list="cams" placeholder="модель, наприклад Logitech C270" autocomplete="off"></label>
+          <label class="f">Камера<input id="r-webcam" list="cams" placeholder="напр. Logitech C270" autocomplete="off"></label>
           <label class="f">Освітлення<select id="r-lighting"></select></label>
         </div>
-        <label class="consent"><input type="checkbox" id="r-consent">
-          Письмову інформовану згоду учасника отримано (№ <input class="ref" id="r-consent-ref" placeholder="07/2026">) – <b>обов'язково</b></label>
+        <div class="consent">
+          <label><input type="checkbox" id="r-consent"> Письмову інформовану згоду учасника отримано <b>(обов'язково)</b></label>
+          <label>№ згоди <input class="ref" id="r-consent-ref" placeholder="07/2026"></label>
+        </div>
         <div class="cap small">Тип подання</div>
         <div class="radios">
           <label><input type="radio" name="ptype" value="bona_fide" checked> Справжнє (bona fide)</label>

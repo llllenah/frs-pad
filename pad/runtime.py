@@ -54,11 +54,18 @@ def build_classifier(cfg: dict, override: str | None = None) -> AttackClassifier
     return default_classifier()
 
 
-def build_runtime(cfg: dict, classifier: str | None = None) -> tuple[FramePipeline, SessionManager]:
-    """Створює конвеєр кадру і SessionManager."""
+def build_runtime(cfg: dict, classifier: str | None = None,
+                  max_hands: int = 1) -> tuple[FramePipeline, SessionManager]:
+    """Створює конвеєр кадру і SessionManager.
+
+    max_hands – скільки кистей шукає MediaPipe Hands. Веб-інтерфейс передає 2, щоб
+    показати на відео обидві кисті; виклики все одно перевіряються за кистю,
+    найближчою до обличчя. Офлайн-обробка записів (import_remote.py) лишає 1,
+    щоб результати пілоту відтворювалися.
+    """
     settings = PadSettings.from_dict(cfg.get("pad", {}))
     models = cfg.get("models", {})
-    verifier = ChallengeVerifier(mirrored=False)
+    verifier = ChallengeVerifier(mirrored=False, max_num_hands=max_hands)
     detector = create_detector(resolve(models.get("detector")), verifier,
                                models.get("detector_min_face", 40), models.get("detector_max_side", 640))
     embedder = create_embedder(resolve(models.get("embedder")), models.get("embedder_profile", "mobilefacenet"),

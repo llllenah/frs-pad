@@ -51,15 +51,15 @@ class DemoView:
 
     @staticmethod
     def draw_landmarks(frame: np.ndarray, data, box=None) -> None:
-        """Точки Face Mesh (кожна четверта), кисть і рамка обличчя на кадрі."""
+        """Точки Face Mesh (кожна четверта), кисті і рамка обличчя на кадрі."""
         if box is not None:
             x, y, w, h = map(int, box.bbox)
             cv2.rectangle(frame, (x, y), (x + w, y + h), GREEN, 2)
         if data.face is not None:
             for p in data.face[::4].astype(int):
                 cv2.circle(frame, tuple(p), 1, (255, 220, 120), -1)
-        if data.hand is not None:
-            pts = data.hand.astype(int)
+        for hand in data.hands or ([] if data.hand is None else [data.hand]):
+            pts = hand.astype(int)
             for a, b in ((0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8),
                          (5, 9), (9, 10), (10, 11), (11, 12), (9, 13), (13, 14), (14, 15),
                          (15, 16), (13, 17), (17, 18), (18, 19), (19, 20), (0, 17)):

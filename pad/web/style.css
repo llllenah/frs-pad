@@ -20,6 +20,8 @@
 }
 
 * { box-sizing: border-box; }
+/* тонкі смуги прокручування в бічних колонках і журналах */
+.side, .right, .content, .incidents, .table-wrap { scrollbar-width: thin; scrollbar-color: #c4c4c4 transparent; }
 html, body { margin: 0; height: 100%; }
 body { background: var(--bg); color: var(--text); font: 15px/1.4 var(--sans); }
 button, input, select { font: inherit; color: inherit; }
@@ -43,12 +45,15 @@ button, input, select { font: inherit; color: inherit; }
 .logo::after {
   content: ""; position: absolute; inset: 14px; border-radius: 50%; background: #000;
 }
-.topbar nav { display: flex; gap: 8px; flex: 1; overflow-x: auto; }
+.topbar nav { display: flex; gap: 8px; flex: 1; overflow-x: auto; scrollbar-width: none; }
+.topbar nav::-webkit-scrollbar { display: none; }
 .topbar nav a {
   color: #d6d6d6; text-decoration: none; padding: 9px 18px; border-radius: 9px; font-size: 16.5px; white-space: nowrap;
 }
-.topbar nav a[href]:hover { color: #fff; }
+.topbar nav a:not(.active):hover { color: #fff; background: rgba(255,255,255,.14); }
 .topbar nav a.active { background: #fff; color: #000; font-weight: 600; }
+.topbar nav a.active:hover { background: #e6e6e6; color: #000; }
+.topbar nav a:focus-visible, .sound:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 .topbar nav a.off { color: #8a8a8a; cursor: default; }
 .live { font-size: 16px; color: #8a8a8a; white-space: nowrap; }
 .live.on { color: #fff; }
@@ -70,12 +75,14 @@ button, input, select { font: inherit; color: inherit; }
 .btn {
   border: 1.5px solid var(--ink); background: #fff; border-radius: 9px; padding: 9px 18px; font-weight: 600; cursor: pointer;
 }
-.btn:hover:not(:disabled) { background: var(--soft); }
+.btn { transition: background-color .12s, border-color .12s; }
+.btn:hover:not(:disabled) { background: #e9e9e9; }
+.btn:focus-visible { outline: 2px solid #000; outline-offset: 2px; }
 .btn.primary { background: var(--ink); color: #fff; }
-.btn.primary:hover:not(:disabled) { background: #2a2a2a; }
+.btn.primary:hover:not(:disabled) { background: #3a3a3a; border-color: #3a3a3a; }
 .btn:disabled { opacity: .4; cursor: not-allowed; }
 .btn.sm { padding: 5px 11px; font-size: 13.5px; border-width: 1px; }
-.btn.big { padding: 11px 20px; font-size: 16.5px; }
+.btn.big { padding: 11px 20px; font-size: 16.5px; white-space: nowrap; }
 a.btn { display: inline-block; text-decoration: none; color: inherit; }
 .kv { margin: 0; display: grid; grid-template-columns: 1fr auto; row-gap: 9px; column-gap: 10px; }
 .kv dt { margin: 0; }
@@ -193,6 +200,7 @@ input[type=checkbox], input[type=radio] { accent-color: #000; width: 17px; heigh
 .muted-card { color: #555; }
 .muted-card dd { color: #999; }
 details summary { cursor: pointer; color: var(--muted); font-size: 13.5px; margin-top: 12px; }
+details summary:hover { color: var(--text); }
 .allfeat { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 6px; }
 .allfeat td { padding: 2px 0; border-bottom: 1px solid var(--soft); }
 .allfeat td:last-child { text-align: right; font-family: var(--mono); }
@@ -241,7 +249,8 @@ details summary { cursor: pointer; color: var(--muted); font-size: 13.5px; margi
   display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; gap: 10px; align-items: center;
   padding: 6px 8px; border: 1px solid var(--line); border-radius: 10px; background: #fff; cursor: pointer;
 }
-.inc:hover, .inc:focus-visible { background: var(--soft); outline: none; }
+.inc:hover { background: var(--soft); }
+.inc:focus-visible { background: var(--soft); outline: 2px solid #000; outline-offset: 1px; }
 .inc img, .inc .noimg { width: 42px; height: 42px; border-radius: 7px; object-fit: cover; background: var(--soft); display: block; }
 .inc .txt { min-width: 0; }
 .inc .txt b { display: block; font-size: 14px; line-height: 1.25; }
@@ -268,11 +277,19 @@ details summary { cursor: pointer; color: var(--muted); font-size: 13.5px; margi
 .pagehead h1 { margin: 0; font-size: 25px; }
 .pagehead p { margin: 2px 0 0; }
 .pagehead .btn.rec { background: #fff; color: #000; }
+.pagehead .btn.rec:hover:not(:disabled) { background: #e9e9e9; }
 .grid2 { display: grid; grid-template-columns: minmax(0, 1.42fr) minmax(0, 1fr); gap: 18px; margin-bottom: 18px; }
 .form .g3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 16px; }
-.form label.f { display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
-.form label.f > * { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--text); font-size: 16px; }
-.consent { display: flex; align-items: center; gap: 9px; margin: -2px 0 16px; flex-wrap: wrap; }
+.form label.f {
+  display: flex; flex-direction: column; justify-content: flex-end; gap: 6px;
+  font-size: 12.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+}
+.form label.f > * { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--text); font-size: 15px; }
+.form label.f > select { padding: 0 2px 0 8px; font-size: 14px; }
+/* форма запису ширша: три поля в рядку і назви в списках не обрізаються */
+@media (min-width: 1181px) { #view-record .grid2 { grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); } }
+.consent { display: flex; align-items: center; gap: 8px 18px; margin: -2px 0 16px; flex-wrap: wrap; }
+.consent label { display: flex; align-items: center; gap: 9px; cursor: pointer; }
 .consent input.ref { width: 110px; height: 30px; padding: 0 8px; }
 .radios { display: flex; gap: 24px; margin: 4px 0 18px; flex-wrap: wrap; }
 .radios label { display: flex; align-items: center; gap: 8px; font-size: 16px; cursor: pointer; }
@@ -310,14 +327,18 @@ details summary { cursor: pointer; color: var(--muted); font-size: 13.5px; margi
 .table td { padding: 9px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .table td.mono { font-size: 13.5px; }
 .table .empty td { color: var(--muted); white-space: normal; text-align: center; padding: 20px; }
+.table tbody tr:not(.empty):hover td { background: #f7f7f7; }
 .table-wrap { overflow-x: auto; }
 .badge { display: inline-block; border-radius: 999px; padding: 2px 12px; font-size: 14px; font-weight: 600; background: var(--soft); color: #555; }
 .badge.attack { background: #000; color: #fff; }
 .status {
   display: inline-block; border-radius: 999px; padding: 2px 12px; font-size: 14px; font-weight: 600; border: 1.5px solid #000; background: #fff; cursor: pointer;
 }
+.status:hover { background: var(--soft); }
 .status.pending { border-color: transparent; background: var(--soft); color: #444; }
-.status.static { cursor: default; border-color: transparent; background: none; color: var(--muted); font-weight: 500; }
+.status.pending:hover { background: #e2e2e2; color: #000; }
+.status.static, .status.static:hover { cursor: default; border-color: transparent; background: none; color: var(--muted); font-weight: 500; }
+.status:focus-visible { outline: 2px solid #000; outline-offset: 2px; }
 
 .table td .btn.sm { padding: 3px 10px; }
 
@@ -347,11 +368,12 @@ details summary { cursor: pointer; color: var(--muted); font-size: 13.5px; margi
 .popup .txt small { display: block; font-size: 13.5px; margin-top: 3px; opacity: .92; }
 .popup .acts { display: flex; flex-direction: column; gap: 6px; flex: none; }
 .popup .acts .btn { background: #fff; color: #000; border-color: #fff; }
+.popup .acts .btn:hover:not(:disabled) { background: #e9e9e9; border-color: #e9e9e9; }
 .popup.alarm { background: var(--red); border-color: var(--red); color: #fff; }
 .popup.warn { background: var(--amber); border-color: var(--amber); color: #fff; }
 .popup.ok { border-color: var(--green); }
 .popup.ok .txt b { color: var(--green); }
-.popup.ok .acts .btn { border-color: #000; }
+.popup.ok .acts .btn, .popup.ok .acts .btn:hover:not(:disabled) { border-color: #000; }
 
 /* подробиці інциденту */
 .modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: grid; place-items: center; z-index: 40; padding: 16px; }
@@ -360,7 +382,7 @@ details summary { cursor: pointer; color: var(--muted); font-size: 13.5px; margi
 .dialog-head b { font-size: 18px; }
 .dialog-body { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 20px; padding: 18px; align-items: start; }
 .dialog-body .kv { font-size: 14.5px; }
-.dialog-body .kv dd { white-space: normal; overflow-wrap: anywhere; }
+.dialog-body .kv dd { white-space: normal; overflow-wrap: anywhere; font-family: var(--sans); font-variant-numeric: tabular-nums; }
 .inc-photo img { width: 100%; border-radius: 10px; display: block; background: var(--soft); }
 .inc-photo .noimg { aspect-ratio: 1; border-radius: 10px; background: var(--soft); color: var(--muted); display: grid; place-content: center; text-align: center; padding: 12px; font-size: 14px; }
 .dialog-foot { display: flex; justify-content: flex-end; align-items: center; gap: 10px; padding: 12px 18px; border-top: 1px solid var(--line); font-size: 14px; }
@@ -388,7 +410,7 @@ details summary { cursor: pointer; color: var(--muted); font-size: 13.5px; margi
 .player .play { min-width: 126px; }
 .player input[type=range] { flex: 1; min-width: 80px; accent-color: #000; height: 20px; }
 .speed { display: flex; gap: 4px; }
-.speed .btn.on { background: #000; color: #fff; }
+.speed .btn.on, .speed .btn.on:hover:not(:disabled) { background: #000; color: #fff; }
 .review .chart { height: 200px; }
 .legend i.win { border-top: 0; height: 10px; width: 16px; background: #e3e3e3; }
 .rv-truth { font-size: 15px; line-height: 1.45; }
@@ -425,6 +447,10 @@ details summary { cursor: pointer; color: var(--muted); font-size: 13.5px; margi
 /* ----- вузькі екрани ----- */
 
 @media (max-width: 1180px) {
+  .topbar { gap: 20px; padding: 0 16px; }
+  .brand span.name { display: none; }
+  .topbar nav { gap: 4px; }
+  .topbar nav a { padding: 8px 12px; font-size: 15.5px; }
   .verify, .monitor, .review { grid-template-columns: 240px minmax(0, 1fr); }
   .verify .right, .monitor .right, .review .right { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); }
   .view { height: auto; }

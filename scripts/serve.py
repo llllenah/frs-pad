@@ -48,7 +48,7 @@ def main() -> int:
     import uvicorn
 
     cfg = load_config(args.config)
-    pipeline, manager = build_runtime(cfg, args.classifier)
+    pipeline, manager = build_runtime(cfg, args.classifier, max_hands=2)
     pipeline.warmup()
     clf_path = resolve(args.classifier or cfg.get("classifier"))
     app = create_app(PadService(pipeline, manager, args.data, key, cfg.get("monitoring"),

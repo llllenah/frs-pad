@@ -73,14 +73,21 @@ class ChallengeVerifier:
                hands: bool = True) -> tuple[np.ndarray | None, np.ndarray | None]:
         """Повертає точки обличчя (468, 2) і кисті (21, 2) у пікселях або None.
 
+        Якщо знайдено кілька кистей, повертається найближча до обличчя.
         hands=False пропускає Hands: коли кисті в кадрі немає, Hands щокадрово
         шукає долоню і займає більшу частину часу модуля.
         """
+        face, found = self.detect_all(frame_bgr, hands)
+        return face, self.closest_hand(found, face)
+
+    def detect_all(self, frame_bgr: np.ndarray,
+                   hands: bool = True) -> tuple[np.ndarray | None, list[np.ndarray]]:
+        """Точки обличчя і всі знайдені кисті (не більше max_num_hands)."""
         self._ensure_models()
         h, w = frame_bgr.shape[:2]
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         rgb.flags.writeable = False
-        face = hand = None
+        face = None
         res = self.face_mesh.process(rgb)
         if res.multi_face_landmarks:
             lm = res.multi_face_landmarks[0].landmark
@@ -91,14 +98,17 @@ class ChallengeVerifier:
         search = self._hand_seen or self._frame_no % self.palm_search_stride == 0
         res = self.hands.process(rgb) if hands and search else None
         self._hand_seen = bool(res is not None and res.multi_hand_landmarks)
+        found = []
         if res is not None and res.multi_hand_landmarks:
-            hands = [np.array([(p.x * w, p.y * h) for p in hl.landmark], dtype=np.float32)
+            found = [np.array([(p.x * w, p.y * h) for p in hl.landmark], dtype=np.float32)
                      for hl in res.multi_hand_landmarks]
-            hand = self._closest_hand(hands, face)
-        return face, hand
+        return face, found
 
     @staticmethod
-    def _closest_hand(hands: list[np.ndarray], face: np.ndarray | None) -> np.ndarray:
+    def closest_hand(hands: list[np.ndarray], face: np.ndarray | None) -> np.ndarray | None:
+        """Кисть, центр долоні якої найближчий до центру обличчя (її перевіряють виклики)."""
+        if not hands:
+            return None
         if face is None or len(hands) == 1:
             return hands[0]
         center = face.mean(axis=0)

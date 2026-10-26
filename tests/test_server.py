@@ -145,6 +145,7 @@ def test_verify_session_over_websocket(tmp_path):
     assert during["session"]["measure"] is not None
     assert during["face"] is not None and len(during["face"]) == 468 * 2
     assert during["check"]["face_points"] == 468 and during["box"][4] == pytest.approx(0.99)
+    assert isinstance(during["hands"], list) and during["check"]["hands"] == (during["hand"] is not None)
 
     final = replies[-1]["session"]
     assert final["state"] == "bona_fide"
