@@ -62,7 +62,7 @@ def session_table(data: dict) -> dict[str, dict]:
     """Мітка, учасник і вид атаки для кожного сеансу."""
     table = {}
     for s, y, subj, sp in zip(data["session"], data["y"], data["subject"], data["species"]):
-        table[s] = {"label": int(y), "subject": subj, "species": sp or "attack"}
+        table[s] = {"label": int(y), "subject": subj, "species": (sp or "attack") if y else "bona_fide"}
     return table
 
 
@@ -75,7 +75,7 @@ def oof_threshold(make, data: dict, idx: np.ndarray, target: float) -> float:
         scores[idx] = model.predict_batch(data["X"][idx])
     else:
         for subj in subjects:
-            tr = idx[data["subject"][idx] != subj]
+            tr = idx[(data["subject"][idx] != subj) & (data["target"][idx] != subj)]
             te = idx[data["subject"][idx] == subj]
             if len(np.unique(data["y"][tr])) < 2:
                 continue
@@ -95,7 +95,9 @@ def loso(data: dict, name: str, cfg: dict) -> dict:
     ch_scores = np.full(len(data["y"]), np.nan)
     sess_rows, folds = [], []
     for subj in np.unique(data["subject"]):
-        tr = np.nonzero(data["subject"] != subj)[0]
+        # у навчання не потрапляють атаки з обличчям тестового учасника як цільовим (ТЗ: вибірки без
+        # перетину учасників), інакше модель бачила б його обличчя
+        tr = np.nonzero((data["subject"] != subj) & (data["target"] != subj))[0]
         te = np.nonzero(data["subject"] == subj)[0]
         if len(np.unique(data["y"][tr])) < 2:
             continue

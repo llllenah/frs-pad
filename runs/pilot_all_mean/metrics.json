@@ -32,39 +32,39 @@
     "threshold": {
       "session": {
         "operating_point": {
-          "apcer": 0.9705882352941176,
+          "apcer": 0.9090909090909091,
           "apcer_per_species": {
-            "deep_live_cam": 0.9705882352941176
+            "inswapper_128_offline": 0.9090909090909091
           },
-          "bpcer": 0.029411764705882353,
-          "acer": 0.5,
+          "bpcer": 0.058823529411764705,
+          "acer": 0.4839572192513369,
           "note": "порогу τ кожного фолду відповідає BPCER <= 0.05 на валідації"
         },
         "bpcer20": 1.0,
-        "eer": 0.5294117647058824,
-        "auc": 0.3901384083044983,
+        "eer": 0.6176470588235294,
+        "auc": 0.3493761140819965,
         "n_bona_fide": 34,
-        "n_attack": 34
+        "n_attack": 33
       },
       "challenge": {
-        "eer": 0.5194805194805194,
-        "auc": 0.47607187333214734,
-        "bpcer20": 0.987012987012987
+        "eer": 0.5416666666666667,
+        "auc": 0.46572871572871577,
+        "bpcer20": 0.974025974025974
       },
       "per_challenge_type": {
         "cover_left": {
           "eer": 0.4444444444444444,
-          "auc": 0.6068376068376068,
+          "auc": 0.5982905982905983,
           "n": 22
         },
         "cover_mouth": {
           "eer": 0.5,
-          "auc": 0.45714285714285713,
+          "auc": 0.45238095238095233,
           "n": 41
         },
         "cover_right": {
           "eer": 0.5384615384615384,
-          "auc": 0.44505494505494503,
+          "auc": 0.489010989010989,
           "n": 27
         },
         "hand_swipe": {
@@ -73,9 +73,9 @@
           "n": 16
         },
         "turn_head": {
-          "eer": 0.6818181818181819,
-          "auc": 0.2975206611570248,
-          "n": 44
+          "eer": 0.7619047619047619,
+          "auc": 0.2445887445887446,
+          "n": 43
         }
       }
     },
@@ -84,17 +84,17 @@
         "operating_point": {
           "apcer": 0.0,
           "apcer_per_species": {
-            "deep_live_cam": 0.0
+            "inswapper_128_offline": 0.0
           },
-          "bpcer": 0.08823529411764706,
-          "acer": 0.04411764705882353,
+          "bpcer": 0.029411764705882353,
+          "acer": 0.014705882352941176,
           "note": "порогу τ кожного фолду відповідає BPCER <= 0.05 на валідації"
         },
         "bpcer20": 0.0,
         "eer": 0.0,
         "auc": 1.0,
         "n_bona_fide": 34,
-        "n_attack": 34
+        "n_attack": 33
       },
       "challenge": {
         "eer": 0.0,
@@ -125,7 +125,7 @@
         "turn_head": {
           "eer": 0.0,
           "auc": 1.0,
-          "n": 44
+          "n": 43
         }
       }
     }
@@ -133,44 +133,44 @@
   "final_models": {
     "threshold": {
       "path": "runs\\pilot_all_mean\\model_threshold.json",
-      "recommended_threshold": 0.9999999814407193
+      "recommended_threshold": 0.9999999762087207
     },
     "logistic": {
       "path": "runs\\pilot_all_mean\\model_logistic.json",
-      "recommended_threshold": 0.4001761817349111,
+      "recommended_threshold": 0.3437879116686655,
       "onnx": "runs\\pilot_all_mean\\model_logistic.onnx",
       "top_features": [
         [
           "s_enr_before_mean",
-          -2.163251937308133
+          -2.1293553306614625
         ],
         [
           "s_ref_before_mean",
-          1.7801845405659469
+          1.7438379855347128
         ],
         [
           "s_enr_after_mean",
-          -1.5157461075753196
+          -1.4859145475589541
         ],
         [
           "s_ref_during_mean",
-          1.289404327767049
+          1.286687161700519
         ],
         [
           "s_enr_during_mean",
-          -1.255230368232283
+          -1.249881761602422
         ],
         [
           "s_ref_after_mean",
-          0.9829982296487242
+          0.991104780785176
         ],
         [
           "s_enr_during_var",
-          -0.6803666000966823
+          -0.7501380104829207
         ],
         [
           "s_enr_before_min",
-          -0.5262018392289902
+          -0.5180715749663829
         ]
       ]
     }

@@ -201,15 +201,14 @@ def test_mouth_cover_measured_against_lower_part(verifier):
 def test_head_turn_continues_when_profile_face_is_lost(verifier):
     from pad.challenges import HeadTurnChallenge
 
-    ch = HeadTurnChallenge("left", 30.0, consecutive_frames=5, face_hold_s=1.0)
-    turned = synthetic_face(yaw=45.0)
-    frames = [FrameData(t=i / 30, face=turned, size=SIZE) for i in range(3)]
-    frames += [FrameData(t=(3 + i) / 30, face=None, size=SIZE) for i in range(4)]
-    for f in frames:
-        ch.add_frame(f, verifier)
-    assert ch.is_performed(verifier)
-    # без попереднього повороту зникнення обличчя виклик не зараховує
-    ch2 = HeadTurnChallenge("left", 30.0, consecutive_frames=5, face_hold_s=1.0)
-    for i in range(8):
-        ch2.add_frame(FrameData(t=i / 30, face=None, size=SIZE), verifier)
-    assert not ch2.is_performed(verifier)
+    def run(n_turned, n_lost, n_turned_after=0):
+        ch = HeadTurnChallenge("left", 30.0, consecutive_frames=5, face_hold_s=1.0)
+        turned = synthetic_face(yaw=45.0)
+        faces = [turned] * n_turned + [None] * n_lost + [turned] * n_turned_after
+        for i, f in enumerate(faces):
+            ch.add_frame(FrameData(t=i / 30, face=f, size=SIZE), verifier)
+        return ch.is_performed(verifier)
+
+    assert run(3, 4, 2)          # 3 + 2 кадри з кутом, між ними профіль без точок – серія не перервана
+    assert not run(1, 6)         # один кадр з кутом і вихід з кадру виклик не зараховують
+    assert not run(0, 8)

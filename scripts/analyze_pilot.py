@@ -107,6 +107,70 @@ def univariate_auc() -> list[tuple[str, float, float, float]]:
     return sorted(res, key=lambda r: -r[1])
 
 
+ABLATION = {  # назва -> префікси ознак
+    "усі 26 ознак": ("s_",),
+    "лише вікно «до» (8)": ("s_ref_before_", "s_enr_before_"),
+    "«під час», «після», відновлення (18)": ("s_ref_during_", "s_ref_after_", "s_ref_trec", "s_enr_during_",
+                                              "s_enr_after_", "s_enr_trec"),
+    "лише s_ref (13)": ("s_ref_",),
+    "s_ref «до» (4)": ("s_ref_before_",),
+    "s_ref «під час», «після», відновлення (9)": ("s_ref_during_", "s_ref_after_", "s_ref_trec"),
+    "лише s_enr (13)": ("s_enr_",),
+}
+
+
+def ablation() -> dict:
+    """LOSO логістичної регресії на підмножинах ознак: об'єднані AUC і EER та AUC кожного фолду."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import train
+    from pad.metrics import auc, eer
+
+    base = to_arrays(read_csv(ROOT / "data" / "features.csv"))
+    out = {}
+    for name, prefixes in ABLATION.items():
+        names = [n for n in FEATURE_NAMES if n.startswith(prefixes)]
+        data = dict(base)
+        data["X"] = base["X"][:, [FEATURE_NAMES.index(n) for n in names]]
+        res = train.loso(data, "logistic", {"C": 1.0, "seed": 42, "target_bpcer": 0.05, "names": names})
+        rows = res["session_rows"]
+        fold_auc = {}
+        for subj in sorted({r["subject"] for r in rows}):
+            rr = [r for r in rows if r["subject"] == subj]
+            fold_auc[subj] = auc([r["score"] for r in rr], [r["label"] for r in rr])
+        out[name] = {"n_features": len(names), "auc": res["session"]["auc"], "eer": res["session"]["eer"],
+                     "fold_auc": fold_auc, "apcer": res["session"]["operating_point"]["apcer"],
+                     "bpcer": res["session"]["operating_point"]["bpcer"],
+                     "bootstrap_auc": bootstrap_auc(rows)}
+    return out
+
+
+def bootstrap_auc(rows: list[dict], n: int = 2000, seed: int = 0) -> list[float]:
+    """95 % інтервал AUC бутстрепом за учасниками (сеанси одного учасника беруться разом)."""
+    from pad.metrics import auc
+
+    rng = np.random.default_rng(seed)
+    subjects = sorted({r["subject"] for r in rows})
+    by = {s: [r for r in rows if r["subject"] == s] for s in subjects}
+    vals = []
+    for _ in range(n):
+        pick = [r for s in rng.choice(subjects, len(subjects)) for r in by[s]]
+        y = [r["label"] for r in pick]
+        if len(set(y)) == 2:
+            vals.append(auc([r["score"] for r in pick], y))
+    return [float(np.percentile(vals, 2.5)), float(np.percentile(vals, 97.5))]
+
+
+def session_failures(recs: dict) -> dict:
+    """Скільки сеансів мають хоча б один невиконаний виклик (у живому сеансі – повтор або «не пройдено»)."""
+    out = {}
+    for cls in ("bona_fide", "attack"):
+        sess = [r for r in recs.values() if r["metadata"]["presentation_type"] == cls]
+        failed = sum(any(not ch["performed"] for ch in r["decision"]["explanation"]["attempts"][0]) for r in sess)
+        none = sum(all(not ch["performed"] for ch in r["decision"]["explanation"]["attempts"][0]) for r in sess)
+        out[cls] = {"sessions": len(sess), "with_failed_challenge": failed, "no_performed": none}
+    return out
+
+
 def load_records(key: bytes) -> dict[str, dict]:
     recs = {}
     for f in sorted((ROOT / "data" / "recordings").glob("*/*/session.json.enc")):
@@ -223,6 +287,8 @@ def main() -> int:
         "challenge_rates": rates,
         "n_sessions": dict(Counter(r["metadata"]["presentation_type"] for r in recs.values())),
         "series_example": fig_series(recs, out),
+        "session_failures": session_failures(recs),
+        "ablation": ablation(),
     }
     fig_det(out)
     fig_challenges(rates, out)
@@ -232,6 +298,10 @@ def main() -> int:
         print(f"{k:38s} APCER {v['apcer']:.3f} [{v['apcer_ci'][0]:.2f}; {v['apcer_ci'][1]:.2f}]  "
               f"BPCER {v['bpcer']:.3f} [{v['bpcer_ci'][0]:.2f}; {v['bpcer_ci'][1]:.2f}]  "
               f"BPCER20 {v['bpcer20']:.3f}  EER {v['eer']:.3f}  AUC {v['auc']:.3f}")
+    for k, v in report["ablation"].items():
+        print(f"{k:45s} AUC {v['auc']:.3f} [{v['bootstrap_auc'][0]:.2f}; {v['bootstrap_auc'][1]:.2f}] "
+              f"EER {v['eer']:.3f}  фолди {', '.join(f'{a:.2f}' for a in v['fold_auc'].values())}")
+    print("сеанси з невиконаним викликом:", report["session_failures"])
     print("викликів виконано:", {k: f"{d}/{n}" for k, (d, n) in rates.items()})
     print("результати:", out)
     return 0

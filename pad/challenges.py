@@ -69,6 +69,8 @@ class Challenge(ABC):
     def _longest_run(self) -> int:
         best = run = 0
         for m in self.measures:
+            if m.get("held") and m.get("ok"):
+                continue  # кадр без точок, «утриманий» після виконання: серію не перериває, але й не подовжує
             run = run + 1 if m.get("ok") else 0
             best = max(best, run)
         return best
@@ -153,10 +155,11 @@ class HeadTurnChallenge(Challenge):
     def measure(self, face, hand, frame, verifier) -> dict:
         if frame.face is None:  # для повороту потрібні точки саме цього кадру
             # при повороті на 60° і більше Face Mesh втрачає обличчя в профіль: якщо перед цим
-            # кут уже перевищив поріг, поворот вважається продовженим (не довше face_hold_s)
+            # кут уже перевищив поріг, такі кадри не переривають серію (не довше face_hold_s), але й
+            # не зараховуються – потрібні consecutive_frames кадрів з виміряним кутом
             last = next((m for m in reversed(self.measures) if m.get("yaw") is not None), None)
             held = bool(last is not None and last["ok"] and frame.t - last["t"] <= self.face_hold_s)
-            return {"yaw": None, "ok": held}
+            return {"yaw": None, "ok": held, "held": True}
         yaw, pitch, roll = verifier.head_pose(frame.face, frame.size)
         sign = 1.0 if self.direction == "left" else -1.0
         return {"yaw": yaw, "pitch": pitch, "roll": roll,

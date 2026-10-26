@@ -18,7 +18,7 @@ import numpy as np
 from .features import FEATURE_NAMES, DriftFeatureExtractor, InsufficientDataError
 from .storage import SUFFIX, read_json
 
-META_COLUMNS = ["subject", "session_uid", "label", "pai_species", "challenge_type", "order", "attempt"]
+META_COLUMNS = ["subject", "session_uid", "label", "pai_species", "target", "challenge_type", "order", "attempt"]
 
 
 def write_csv(rows: list[dict], path: str | Path) -> None:
@@ -51,6 +51,7 @@ def to_arrays(rows: list[dict]) -> dict[str, np.ndarray]:
         "subject": np.array([r["subject"] for r in rows]),
         "session": np.array([r["session_uid"] for r in rows]),
         "species": np.array([r.get("pai_species") or "" for r in rows]),
+        "target": np.array([r.get("target") or "" for r in rows]),
         "challenge_type": np.array([r["challenge_type"] for r in rows]),
     }
 
@@ -83,6 +84,7 @@ def rows_from_recording(path: str | Path, extractor: DriftFeatureExtractor | Non
                 continue
             rows.append({"subject": meta["participant"], "session_uid": uid, "label": label,
                          "pai_species": meta.get("swap_tool", "") if label else "",
+                         "target": meta.get("target_face", "") if label else "",
                          "challenge_type": ch["challenge_type"], "order": order, "attempt": attempt,
                          **dict(zip(FEATURE_NAMES, map(float, fv.values)))})
     return rows
