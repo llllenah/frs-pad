@@ -445,3 +445,6 @@ details summary { cursor: pointer; color: var(--muted); font-size: 13.5px; margi
   .instr b { font-size: 15.5px; }
   .content { padding: 20px 16px; }
 }
+
+/* підпис рішення в перегляді: «(logistic-C1.0)» не розривається */
+#rv-d-caption { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
