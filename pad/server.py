@@ -46,6 +46,7 @@ import re
 import struct
 import threading
 import time
+from urllib.parse import urlsplit
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -56,7 +57,7 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -164,7 +165,7 @@ class ReviewRequest(BaseModel):
     """Розмітка запису: оператор перевірив виклики і мітки сеансу."""
 
     reviewed: bool = True
-    note: str = ""
+    note: str = Field("", max_length=500)
 
 
 class SettingsRequest(BaseModel):
@@ -1156,14 +1157,70 @@ class PadService:
         return frames[index]
 
 
+# ----- захист від запитів зі сторонніх сайтів -----
+
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+MAX_BODY = 10 * 1024 * 1024           # фото для реєстрації – до 10 МБ (ТЗ)
+MAX_WS_MESSAGE = 8 * 1024 * 1024      # один кадр JPEG через WebSocket
+IMAGE_TYPES = ("image/jpeg", "image/png", "image/bmp", "image/webp", "application/octet-stream", "")
+SECURITY_HEADERS = {
+    "X-Frame-Options": "DENY",                       # інтерфейс не можна вбудувати в чужу сторінку
+    "Content-Security-Policy": "frame-ancestors 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
+
+
+def same_origin(origin: str | None, host: str) -> bool:
+    """Запит з тієї самої сторінки: Origin відсутній (не браузер) або збігається з Host.
+
+    Браузер додає Origin до кожного POST, PUT, DELETE і WebSocket, тому сторінка
+    іншого сайту, відкрита в браузері охоронця, не може змінити базу осіб чи
+    підключитися до відеопотоку через 127.0.0.1.
+    """
+    if origin is None:
+        return True
+    parts = urlsplit(origin)
+    return parts.scheme in ("http", "https") and parts.netloc.lower() == host.lower()
+
+
+def local_hosts(host: str, port: int) -> set[str]:
+    """Допустимі значення заголовка Host для сервера на host:port (захист від DNS rebinding)."""
+    names = {host, "127.0.0.1", "localhost", "[::1]"} if host in ("127.0.0.1", "localhost", "::1") else {host}
+    return {f"{n}:{port}" for n in names}
+
+
 # ----- застосунок FastAPI -----
 
-def create_app(service: PadService) -> FastAPI:
-    """Застосунок FastAPI з REST, WebSocket і односторінковим інтерфейсом з pad/web."""
+def create_app(service: PadService, allowed_hosts: set[str] | None = None) -> FastAPI:
+    """Застосунок FastAPI з REST, WebSocket і односторінковим інтерфейсом з pad/web.
+
+    allowed_hosts – допустимі значення заголовка Host (None – без перевірки, для тестів).
+    """
     app = FastAPI(title="FRS PAD", description="Прототип модуля виявлення атак підміни обличчя",
                   version="0.1.0")
     app.state.service = service
     app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+
+    def host_ok(host: str) -> bool:
+        return allowed_hosts is None or host.lower() in allowed_hosts
+
+    @app.middleware("http")
+    async def guard(request: Request, call_next):
+        host = request.headers.get("host", "")
+        if not host_ok(host):
+            return JSONResponse({"detail": "невідома адреса сервера"}, 400, headers=SECURITY_HEADERS)
+        if request.method not in SAFE_METHODS:
+            if not same_origin(request.headers.get("origin"), host) \
+                    or request.headers.get("sec-fetch-site") == "cross-site":
+                log.warning("відхилено запит %s %s з іншого сайту", request.method, request.url.path)
+                return JSONResponse({"detail": "запит з іншого сайту відхилено"}, 403, headers=SECURITY_HEADERS)
+            length = request.headers.get("content-length")
+            if length is not None and (not length.isdigit() or int(length) > MAX_BODY):
+                return JSONResponse({"detail": "запит завеликий"}, 413, headers=SECURITY_HEADERS)
+        response = await call_next(request)
+        response.headers.update(SECURITY_HEADERS)
+        return response
 
     @app.get("/", include_in_schema=False)
     def index():
@@ -1180,6 +1237,10 @@ def create_app(service: PadService) -> FastAPI:
     @app.post("/api/participants/{person_id}/image")
     async def post_participant_image(person_id: str, request: Request):
         body = await request.body()
+        if len(body) > MAX_BODY:
+            raise HTTPException(413, "фото більше 10 МБ")
+        if request.headers.get("content-type", "").split(";")[0].strip() not in IMAGE_TYPES:
+            raise HTTPException(415, "очікується зображення JPEG або PNG")
         return await run_in_threadpool(service.enroll_image, person_id, body)
 
     @app.post("/api/sessions")
@@ -1257,6 +1318,11 @@ def create_app(service: PadService) -> FastAPI:
 
     @app.websocket("/ws/stream")
     async def stream(ws: WebSocket):
+        host = ws.headers.get("host", "")
+        if not host_ok(host) or not same_origin(ws.headers.get("origin"), host):
+            log.warning("відхилено WebSocket з іншого сайту: %s", ws.headers.get("origin"))
+            await ws.close(code=1008)
+            return
         await ws.accept()
         conn = StreamConnection()
         try:
@@ -1266,14 +1332,16 @@ def create_app(service: PadService) -> FastAPI:
                     break
                 if msg.get("bytes") is not None:
                     data = msg["bytes"]
-                    if len(data) <= 8:
+                    if len(data) > MAX_WS_MESSAGE:
+                        reply = {"type": "frame_error", "message": "кадр завеликий"}
+                    elif len(data) <= 8:
                         reply = {"type": "frame_error", "message": "кадр без даних"}
                     else:
                         (t,) = struct.unpack_from("<d", data)
                         reply = await run_in_threadpool(service.process_frame, conn, t, data[8:])
                 elif msg.get("text") is not None:
                     try:
-                        cmd = json.loads(msg["text"])
+                        cmd = json.loads(msg["text"]) if len(msg["text"]) <= MAX_WS_MESSAGE else {}
                     except json.JSONDecodeError:
                         cmd = {}
                     reply = await run_in_threadpool(service.command, conn, cmd if isinstance(cmd, dict) else {})
