@@ -199,7 +199,7 @@ def fig_series(recs: dict, out: Path, driver: str = "P03", session: str = "s04")
     for ax, (cls, title) in zip(axes, (("bona_fide", "а) справжнє подання"), ("attack", "б) атака підміни обличчя"))):
         expl = pick[cls]["decision"]["explanation"]
         t = np.array(expl["series"]["t"])
-        for key, style, label in (("s_ref", "-", "s_ref(t)"), ("s_enr", "--", "s_enr(t)")):
+        for key, style, label in (("s_ref", "-", r"$s_{ref}(t)$"), ("s_enr", "--", r"$s_{enr}(t)$")):
             v = np.array([np.nan if x is None else x for x in expl["series"][key]], dtype=float)
             ax.plot(t, v, style, color="black", lw=1.1, label=label)
         for ch in expl["attempts"][0]:
@@ -229,8 +229,8 @@ def fig_det(out: Path) -> None:
     eps = 2e-3
     for (run, model), (label, style) in {
         ("pilot_all", "logistic"): ("логістична регресія, 26 ознак (EER 0)", "-"),
-        ("pilot_sref", "logistic"): ("логістична регресія, лише s_ref", "--"),
-        ("pilot_all", "threshold"): ("поріг на мінімумі s_ref", ":"),
+        ("pilot_sref", "logistic"): (r"логістична регресія, лише $s_{ref}$", "--"),
+        ("pilot_all", "threshold"): (r"поріг на мінімумі $s_{ref}$", ":"),
     }.items():
         rows = sessions(run, model)
         y = [int(r["label"]) for r in rows]
