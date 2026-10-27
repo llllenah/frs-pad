@@ -1763,19 +1763,28 @@ async function refreshUsers() {
   let users, audit;
   try { [users, audit] = await Promise.all([api('/api/users'), api('/api/audit')]); } catch (e) { toast(e.message, 'err'); return; }
   if (App.view !== 'users') return;
+  App.users = users;
+  renderUsersTable();
+  $('#a-table tbody').innerHTML = audit.map(a => `<tr>
+      <td class="mono">${esc(fmtDateTime(a.time))}</td><td>${esc(a.user || 'командний рядок')}</td>
+      <td>${esc(ACTION_TEXT[a.action] || a.action)}</td><td class="mono">${esc(a.target)}</td><td>${esc(changesText(a.changes))}</td>
+    </tr>`).join('') || '<tr class="empty"><td colspan="5">змін ще не було</td></tr>';
+}
+
+// Таблиця облікових записів з пошуком за поштою (FR-07).
+function renderUsersTable() {
   const me = App.user && App.user.email;
+  const q = $('#u-search').value.trim().toLowerCase();
+  const users = (App.users || []).filter(u => !q || u.email.includes(q));
   $('#u-table tbody').innerHTML = users.map(u => `<tr data-email="${esc(u.email)}">
       <td><b>${esc(u.email)}</b>${u.email === me ? ' <span class="tag">ви</span>' : ''}</td>
       <td><select class="role" data-u-role aria-label="Роль ${esc(u.email)}">${Object.entries(ROLE_TEXT).map(([r, t]) =>
         `<option value="${r}"${u.role === r ? ' selected' : ''}>${t}</option>`).join('')}</select></td>
       <td>${u.active ? 'активний' : '<span class="state-off">заблоковано</span>'}</td>
       <td class="mono">${esc(fmtDateTime(u.created))}</td>
-      <td class="acts"><button class="btn sm" data-u-pw>Пароль</button><button class="btn sm" data-u-active="${u.active ? 0 : 1}">${u.active ? 'Заблокувати' : 'Розблокувати'}</button></td>
-    </tr>`).join('') || '<tr class="empty"><td colspan="5">облікових записів немає</td></tr>';
-  $('#a-table tbody').innerHTML = audit.map(a => `<tr>
-      <td class="mono">${esc(fmtDateTime(a.time))}</td><td>${esc(a.user || 'командний рядок')}</td>
-      <td>${esc(ACTION_TEXT[a.action] || a.action)}</td><td class="mono">${esc(a.target)}</td><td>${esc(changesText(a.changes))}</td>
-    </tr>`).join('') || '<tr class="empty"><td colspan="5">змін ще не було</td></tr>';
+      <td class="acts"><button class="btn sm" data-u-pw>Пароль</button>${u.email === me ? ''
+        : `<button class="btn sm" data-u-active="${u.active ? 0 : 1}">${u.active ? 'Заблокувати' : 'Розблокувати'}</button>`}</td>
+    </tr>`).join('') || `<tr class="empty"><td colspan="5">${q ? 'нічого не знайдено' : 'облікових записів немає'}</td></tr>`;
 }
 
 async function updateUser(email, body, done) {
@@ -1944,6 +1953,7 @@ function bind() {
   // користувачі
   $('#logout').addEventListener('click', () => Auth.logout());
   $('#u-form').addEventListener('submit', createUser);
+  $('#u-search').addEventListener('input', renderUsersTable);
   $('#u-table').addEventListener('change', e => {
     const sel = e.target.closest('[data-u-role]');
     if (!sel) return;

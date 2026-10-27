@@ -18,7 +18,7 @@
     <label class="remember"><input type="checkbox" id="l-remember"> Запам'ятати мене на 24 години</label>
     <p class="login-error" id="l-error" role="alert" hidden></p>
     <button class="btn primary big" id="l-submit" type="submit">Увійти</button>
-    <p class="hint small">Обліковий запис створює адміністратор. Після 5 невдалих спроб вхід блокується на 10 хвилин.</p>
+    <p class="hint small">Обліковий запис створює адміністратор. Після 5 невдалих спроб вхід блокується на 15 хвилин.</p>
   </form>
 </main>
 
@@ -437,6 +437,7 @@
     <div class="grid2">
       <div class="card">
         <h2>Облікові записи</h2>
+        <input id="u-search" class="search" placeholder="Пошук за поштою" spellcheck="false" autocomplete="off" aria-label="Пошук за поштою">
         <div class="table-wrap">
           <table class="table" id="u-table">
             <thead><tr><th>Електронна пошта</th><th>Роль</th><th>Стан</th><th>Створено</th><th></th></tr></thead>
@@ -447,7 +448,7 @@
       <form class="card form" id="u-form" novalidate>
         <h2>Новий користувач</h2>
         <label class="f">Електронна пошта<input id="u-email" type="email" autocomplete="off" spellcheck="false"></label>
-        <label class="f">Пароль (не менше 8 символів)<input id="u-password" type="password" autocomplete="new-password"></label>
+        <label class="f">Пароль (8+ символів, велика літера і цифра)<input id="u-password" type="password" autocomplete="new-password"></label>
         <label class="f">Роль<select id="u-role">
           <option value="operator">Оператор – моніторинг і верифікація</option>
           <option value="admin">Адміністратор – усі дії</option>
@@ -473,7 +474,7 @@
   <form class="dialog small" id="pw-form" role="dialog" aria-modal="true" aria-labelledby="pw-title" novalidate>
     <div class="dialog-head"><b id="pw-title">Новий пароль</b></div>
     <div class="dialog-text form">
-      <label class="f">Пароль (не менше 8 символів)<input id="pw-input" type="password" autocomplete="new-password"></label>
+      <label class="f">Пароль (8+ символів, велика літера і цифра)<input id="pw-input" type="password" autocomplete="new-password"></label>
     </div>
     <div class="dialog-foot"><button class="btn" type="button" id="pw-cancel">Скасувати</button><button class="btn primary" type="submit">Змінити</button></div>
   </form>

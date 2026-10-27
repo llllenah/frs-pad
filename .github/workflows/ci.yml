@@ -35,10 +35,10 @@ jobs:
       - name: Smoke test
         run: |
           docker run -d --name frs -p 8000:8000 \
-            -e PAD_ADMIN_EMAIL=ci@example.com -e PAD_ADMIN_PASSWORD=ci-password-123 \
+            -e PAD_ADMIN_EMAIL=ci@example.com -e PAD_ADMIN_PASSWORD=Ci-password-123 \
             -e PAD_JWT_SECRET=ci-secret-0123456789abcdef0123456789abcdef frs-pad:ci
           for i in $(seq 1 60); do curl -sf http://localhost:8000/ >/dev/null && break; sleep 2; done
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/api/config)" = 401
           curl -sf -X POST http://localhost:8000/api/auth/login -H 'Content-Type: application/json' \
-            -d '{"email":"ci@example.com","password":"ci-password-123"}' | grep -q '"role":"admin"'
+            -d '{"email":"ci@example.com","password":"Ci-password-123"}' | grep -q '"role":"admin"'
           docker logs frs | tail -20

@@ -4,7 +4,7 @@
 JWT (HS256) з терміном дії 24 години; токен передається в cookie HttpOnly або в
 заголовку Authorization: Bearer. Ролі: «admin» – усі дії, «operator» – моніторинг,
 верифікація, журнал і перегляд сеансів без зміни бази осіб і налаштувань.
-Після 5 невдалих спроб входу за 10 хвилин обліковий запис блокується на 10 хвилин.
+Після 5 невдалих спроб входу за 10 хвилин обліковий запис блокується на 15 хвилин.
 Облікові записи – у файлі users.json, журнал аудиту – audit.jsonl (одна подія на рядок).
 """
 
@@ -33,7 +33,7 @@ TOKEN_TTL_S = 24 * 3600
 BCRYPT_COST = 12
 MAX_FAILURES = 5            # невдалих спроб входу …
 FAILURE_WINDOW_S = 600      # … за 10 хвилин
-LOCKOUT_S = 600             # блокування на 10 хвилин
+LOCKOUT_S = 900             # блокування на 15 хвилин (FR-04)
 MIN_PASSWORD = 8
 MIN_SECRET = 32             # байт ключа HS256 (RFC 7518, п. 3.2)
 EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]+\.[^@\s]{2,}$")
@@ -74,8 +74,11 @@ def normalize_email(email: str) -> str:
 
 
 def check_password(password: str) -> str:
+    """Вимоги FR-01: не менше 8 символів, хоча б одна велика літера і одна цифра."""
     if not isinstance(password, str) or len(password) < MIN_PASSWORD:
         raise AuthError(f"пароль має містити не менше {MIN_PASSWORD} символів", 422)
+    if not any(c.isupper() for c in password) or not any(c.isdigit() for c in password):
+        raise AuthError("пароль має містити хоча б одну велику літеру і одну цифру", 422)
     if len(password.encode("utf-8")) > 72:   # bcrypt враховує лише перші 72 байти
         raise AuthError("пароль задовгий (до 72 байт)", 422)
     return password

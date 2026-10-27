@@ -1361,6 +1361,9 @@ def create_app(service: PadService, allowed_hosts: set[str] | None = None, auth:
     async def patch_user(email: str, req: UserUpdateRequest, request: Request):
         if auth is None:
             raise HTTPException(404, "облікові записи вимкнено")
+        me: User = request.state.user
+        if req.active is False and email.strip().lower() == me.email:
+            raise HTTPException(409, "власний обліковий запис заблокувати не можна")
         try:
             user, changes = await run_in_threadpool(auth.store.update, email, req.role, req.active, req.password)
         except AuthError as exc:

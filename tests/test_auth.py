@@ -21,7 +21,7 @@ from pad.verifier import ChallengeVerifier
 from test_server import JPEG, FakePipeline, frame_message
 from test_session import Actor, ConstClassifier
 
-ADMIN, OPERATOR, PASSWORD = "admin@example.com", "operator@example.com", "correct-horse-1"
+ADMIN, OPERATOR, PASSWORD = "admin@example.com", "operator@example.com", "Correct-horse-1"
 SECRET = "test-secret-" + "0" * 32
 
 
@@ -307,3 +307,18 @@ def test_operator_cannot_enroll_over_websocket(tmp_path, auth):
 def test_short_signing_key_is_rejected(tmp_path):
     with pytest.raises(AuthError):
         Auth(UserStore(tmp_path / "users.json", cost=4), "short-secret")
+
+
+def test_password_needs_uppercase_and_digit(tmp_path):
+    store = UserStore(tmp_path / "users.json", cost=4)
+    for weak in ("lowercase-only-1", "NoDigitsHere", "Short1"):
+        with pytest.raises(AuthError):
+            store.create("a@example.com", weak, "operator")
+
+
+def test_admin_cannot_block_own_account(tmp_path, auth):
+    client, _ = make_app(tmp_path, auth)
+    login(client)
+    auth.store.update(OPERATOR, role="admin")                  # інший адміністратор є
+    assert client.patch(f"/api/users/{ADMIN}", json={"active": False}).status_code == 409
+    assert auth.store.get(ADMIN).active
