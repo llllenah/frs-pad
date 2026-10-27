@@ -6,7 +6,22 @@
   <title>FRS PAD</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
+<body class="signed-out loading">
+<!-- Рисунок 4.1 – Екранна форма входу до системи -->
+<main id="view-login" class="login-page">
+  <form class="login-card" id="login-form" novalidate>
+    <div class="brand dark"><span class="logo"></span><span class="name">FRS Platform</span></div>
+    <h1>Вхід до системи</h1>
+    <p class="muted">Розпізнавання обличчя з виявленням атак підміни</p>
+    <label class="f">Електронна пошта<input id="l-email" type="email" autocomplete="username" spellcheck="false" required></label>
+    <label class="f">Пароль<input id="l-password" type="password" autocomplete="current-password" required></label>
+    <label class="remember"><input type="checkbox" id="l-remember"> Запам'ятати мене на 24 години</label>
+    <p class="login-error" id="l-error" role="alert" hidden></p>
+    <button class="btn primary big" id="l-submit" type="submit">Увійти</button>
+    <p class="hint small">Обліковий запис створює адміністратор. Після 5 невдалих спроб вхід блокується на 10 хвилин.</p>
+  </form>
+</main>
+
 <header class="topbar">
   <div class="brand"><span class="logo"></span><span class="name">FRS Platform</span></div>
   <nav>
@@ -14,11 +29,16 @@
     <a href="#/monitor" data-view="monitor">Моніторинг</a>
     <a href="#/verify" data-view="verify">Верифікація</a>
     <a href="#/persons" data-view="persons">База осіб</a>
-    <a href="#/record" data-view="record">Дослідження</a>
+    <a href="#/record" data-view="record" class="admin-only">Дослідження</a>
     <a href="#/settings" data-view="settings">Налаштування</a>
+    <a href="#/users" data-view="users" class="admin-only">Користувачі</a>
   </nav>
   <button class="sound" id="sound" title="Звукові сповіщення про тривоги і результати перевірок">Звук: увімк.</button>
   <div class="live" id="live" title="З'єднання браузера з сервером (WebSocket)">● OFFLINE</div>
+  <div class="account" id="account" hidden>
+    <span class="who"><b id="me-email"></b><small id="me-role"></small></span>
+    <button class="sound" id="logout" title="Завершити сесію">Вийти</button>
+  </div>
 </header>
 
 <!-- Сповіщення охоронця: невідома особа, атака, перевірку не пройдено, справжнє подання -->
@@ -100,7 +120,7 @@
       <input id="v-person" class="person-name" list="persons" value="P01" spellcheck="false" autocomplete="off"
              title="Псевдонім заявленої особи">
       <div class="muted" id="v-person-info">еталон: –</div>
-      <div class="row">
+      <div class="row admin-only">
         <button id="v-enroll" class="btn sm" title="Еталон за 30 кадрами з камери">Зареєструвати еталон</button>
         <label class="btn sm file-btn" title="Еталон з фотографії (наприклад, цільового обличчя)">З фото
           <input id="v-photo" type="file" accept="image/jpeg,image/png"></label>
@@ -339,7 +359,7 @@
           </table>
         </div>
       </div>
-      <div class="card form">
+      <div class="card form admin-only">
         <h2>Додати особу</h2>
         <label class="f">Псевдонім<input id="p-id" placeholder="наприклад, P08" spellcheck="false" autocomplete="off"></label>
         <div class="add-row">
@@ -383,10 +403,11 @@
         <p class="hint">Розпізнавання: обличчя вважається особою з бази, якщо косинусна подібність не менша за поріг.
           Атака: сеанс визнається атакою, якщо оцінка класифікатора не менша за поріг.</p>
         <p class="hint" id="s-config"></p>
-        <div class="add-row">
+        <div class="add-row admin-only">
           <button class="btn primary" id="s-apply">Застосувати до перезапуску</button>
           <button class="btn" id="s-reset">Повернути значення з конфігурації</button>
         </div>
+        <p class="hint operator-only">Пороги змінює адміністратор.</p>
       </div>
       <div class="card">
         <h2>Модуль виявлення атак</h2>
@@ -403,6 +424,60 @@
     </div>
   </section>
 </main>
+
+<!-- Користувачі системи і журнал аудиту (лише адміністратор) -->
+<main id="view-users" class="view page" hidden>
+  <section class="content">
+    <div class="pagehead">
+      <div>
+        <h1>Користувачі</h1>
+        <p class="muted">Облікові записи для входу до системи. Паролі зберігаються лише як хеші bcrypt.</p>
+      </div>
+    </div>
+    <div class="grid2">
+      <div class="card">
+        <h2>Облікові записи</h2>
+        <div class="table-wrap">
+          <table class="table" id="u-table">
+            <thead><tr><th>Електронна пошта</th><th>Роль</th><th>Стан</th><th>Створено</th><th></th></tr></thead>
+            <tbody><tr class="empty"><td colspan="5">завантаження…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <form class="card form" id="u-form" novalidate>
+        <h2>Новий користувач</h2>
+        <label class="f">Електронна пошта<input id="u-email" type="email" autocomplete="off" spellcheck="false"></label>
+        <label class="f">Пароль (не менше 8 символів)<input id="u-password" type="password" autocomplete="new-password"></label>
+        <label class="f">Роль<select id="u-role">
+          <option value="operator">Оператор – моніторинг і верифікація</option>
+          <option value="admin">Адміністратор – усі дії</option>
+        </select></label>
+        <div class="add-row"><button class="btn primary" type="submit">Створити</button></div>
+        <p class="hint">Оператор не може змінювати базу осіб, налаштування і записувати набір даних.</p>
+      </form>
+    </div>
+    <div class="card">
+      <h2>Журнал аудиту</h2>
+      <div class="table-wrap">
+        <table class="table" id="a-table">
+          <thead><tr><th>Час</th><th>Користувач</th><th>Дія</th><th>Об'єкт</th><th>Зміни</th></tr></thead>
+          <tbody><tr class="empty"><td colspan="5">завантаження…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- Новий пароль користувача -->
+<div class="modal" id="pw-modal" hidden>
+  <form class="dialog small" id="pw-form" role="dialog" aria-modal="true" aria-labelledby="pw-title" novalidate>
+    <div class="dialog-head"><b id="pw-title">Новий пароль</b></div>
+    <div class="dialog-text form">
+      <label class="f">Пароль (не менше 8 символів)<input id="pw-input" type="password" autocomplete="new-password"></label>
+    </div>
+    <div class="dialog-foot"><button class="btn" type="button" id="pw-cancel">Скасувати</button><button class="btn primary" type="submit">Змінити</button></div>
+  </form>
+</div>
 
 <!-- Підтвердження незворотної дії (видалення особи) -->
 <div class="modal" id="confirm" hidden>

@@ -28,6 +28,11 @@ REST:
     GET  /api/incidents/{id}/snapshot.jpg  знімок обличчя в момент події (лише в пам'яті сервера)
     GET  /api/review/{uid}               перегляд сеансу: ряди, виклики, рішення, мітки часу кадрів
     GET  /api/review/{uid}/frame/{i}.jpg кадр i сеансу (відео розшифровується лише в пам'яті)
+    POST /api/auth/login, POST /api/auth/logout, GET /api/auth/me   вхід, вихід, поточний користувач
+    GET  /api/users, POST /api/users, PATCH /api/users/{email}      облікові записи (адміністратор)
+    GET  /api/audit                      журнал аудиту змін (адміністратор)
+Усі /api/* і /ws/stream, крім входу і виходу, потребують JWT (cookie або Authorization: Bearer);
+зміна бази осіб, налаштувань, облікових записів і запис набору даних – лише для адміністратора.
 WebSocket /ws/stream:
     текст {"cmd": "attach", "session_id": 1} – наступні кадри йдуть у сеанс;
     текст {"cmd": "enroll", "person_id": "P01"} – реєстрація еталона за 30 кадрами;
@@ -62,6 +67,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .app import STATE_TEXT, RunStats, _json_default
+from .auth import Auth, AuthError, User, utc_expiry
 from .classifiers import session_score
 from .features import FEATURE_NAMES
 from .identify import FaceGallery, MonitorSettings
@@ -166,6 +172,26 @@ class ReviewRequest(BaseModel):
 
     reviewed: bool = True
     note: str = Field("", max_length=500)
+
+
+class LoginRequest(BaseModel):
+    """Вхід до системи; remember – зберегти сесію після закриття браузера (до 24 год)."""
+
+    email: str = Field(max_length=254)
+    password: str = Field(max_length=200)
+    remember: bool = False
+
+
+class UserCreateRequest(BaseModel):
+    email: str = Field(max_length=254)
+    password: str = Field(max_length=200)
+    role: Literal["admin", "operator"] = "operator"
+
+
+class UserUpdateRequest(BaseModel):
+    role: Literal["admin", "operator"] | None = None
+    active: bool | None = None
+    password: str | None = Field(None, max_length=200)
 
 
 class SettingsRequest(BaseModel):
@@ -1186,40 +1212,91 @@ def same_origin(origin: str | None, host: str) -> bool:
     return parts.scheme in ("http", "https") and parts.netloc.lower() == host.lower()
 
 
-def local_hosts(host: str, port: int) -> set[str]:
-    """Допустимі значення заголовка Host для сервера на host:port (захист від DNS rebinding)."""
-    names = {host, "127.0.0.1", "localhost", "[::1]"} if host in ("127.0.0.1", "localhost", "::1") else {host}
-    return {f"{n}:{port}" for n in names}
+def local_hosts(host: str, port: int, extra: list[str] | tuple = ()) -> set[str]:
+    """Допустимі значення заголовка Host для сервера на host:port (захист від DNS rebinding).
+
+    Для 0.0.0.0 (контейнер Docker) допускаються локальні імена і явно задані extra
+    (PAD_ALLOWED_HOSTS, наприклад ім'я сервера в локальній мережі).
+    """
+    local = host in ("127.0.0.1", "localhost", "::1", "0.0.0.0", "::")
+    names = {"127.0.0.1", "localhost", "[::1]"} if local else {host}
+    names.update(h.strip() for h in extra if h.strip())
+    # ім'я з портом («nas.local:8443») лишається як є, без порту – доповнюється портом сервера
+    return {n.lower() if re.search(r"[^:]:\d+$", n) else f"{n}:{port}".lower() for n in names}
+
+
+# ----- автентифікація і ролі -----
+
+TOKEN_COOKIE = "frs_token"
+#: запити без токена: вхід і вихід (сторінка і /static – теж без токена, форма входу в них)
+PUBLIC_API = {"/api/auth/login", "/api/auth/logout"}
+
+
+def request_token(headers, cookies) -> str | None:
+    """JWT із заголовка Authorization: Bearer (клієнти API) або з cookie (браузер)."""
+    authz = headers.get("authorization", "")
+    if authz.lower().startswith("bearer "):
+        return authz[7:].strip() or None
+    return cookies.get(TOKEN_COOKIE)
+
+
+def admin_only(method: str, path: str) -> bool:
+    """Дії, доступні лише адміністратору: зміна бази осіб і налаштувань, облікові записи, набір даних."""
+    if path.startswith(("/api/users", "/api/audit", "/api/recordings")):
+        return True
+    if method == "DELETE" and path.startswith("/api/persons/"):
+        return True
+    if method == "PUT" and path == "/api/settings":
+        return True
+    return method == "POST" and path.startswith("/api/participants/")
 
 
 # ----- застосунок FastAPI -----
 
-def create_app(service: PadService, allowed_hosts: set[str] | None = None) -> FastAPI:
+def create_app(service: PadService, allowed_hosts: set[str] | None = None, auth: Auth | None = None,
+               secure_cookies: bool = False) -> FastAPI:
     """Застосунок FastAPI з REST, WebSocket і односторінковим інтерфейсом з pad/web.
 
     allowed_hosts – допустимі значення заголовка Host (None – без перевірки, для тестів).
+    auth – облікові записи і JWT (None – без входу, лише для модульних тестів API).
+    secure_cookies – cookie з токеном лише через HTTPS (сервер запущено з TLS).
     """
     app = FastAPI(title="FRS PAD", description="Прототип модуля виявлення атак підміни обличчя",
-                  version="0.1.0")
+                  version="0.2.0")
     app.state.service = service
+    app.state.auth = auth
     app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
     def host_ok(host: str) -> bool:
         return allowed_hosts is None or host.lower() in allowed_hosts
 
+    def denied(detail: str, status: int) -> JSONResponse:
+        return JSONResponse({"detail": detail}, status, headers=SECURITY_HEADERS)
+
     @app.middleware("http")
     async def guard(request: Request, call_next):
         host = request.headers.get("host", "")
+        path = request.url.path
         if not host_ok(host):
-            return JSONResponse({"detail": "невідома адреса сервера"}, 400, headers=SECURITY_HEADERS)
+            return denied("невідома адреса сервера", 400)
         if request.method not in SAFE_METHODS:
             if not same_origin(request.headers.get("origin"), host) \
                     or request.headers.get("sec-fetch-site") == "cross-site":
-                log.warning("відхилено запит %s %s з іншого сайту", request.method, request.url.path)
-                return JSONResponse({"detail": "запит з іншого сайту відхилено"}, 403, headers=SECURITY_HEADERS)
+                log.warning("відхилено запит %s %s з іншого сайту", request.method, path)
+                return denied("запит з іншого сайту відхилено", 403)
             length = request.headers.get("content-length")
             if length is not None and (not length.isdigit() or int(length) > MAX_BODY):
-                return JSONResponse({"detail": "запит завеликий"}, 413, headers=SECURITY_HEADERS)
+                return denied("запит завеликий", 413)
+        request.state.user = None
+        if auth is not None and path.startswith("/api/") and path not in PUBLIC_API:
+            try:
+                user, _ = auth.decode(request_token(request.headers, request.cookies))
+            except AuthError as exc:
+                return denied(str(exc), exc.status)
+            if user.role != "admin" and admin_only(request.method, path):
+                log.warning("%s (%s): відмовлено в доступі до %s %s", user.email, user.role, request.method, path)
+                return denied("недостатньо прав: дія доступна лише адміністратору", 403)
+            request.state.user = user
         response = await call_next(request)
         response.headers.update(SECURITY_HEADERS)
         if request.url.path.startswith("/static/"):
@@ -1227,9 +1304,76 @@ def create_app(service: PadService, allowed_hosts: set[str] | None = None) -> Fa
             response.headers.setdefault("Cache-Control", "no-cache")
         return response
 
+    def audit(request: Request, action: str, target: str = "", changes: dict | None = None) -> None:
+        if auth is not None:
+            auth.audit(request.state.user, action, target, changes)
+
     @app.get("/", include_in_schema=False)
     def index():
         return FileResponse(WEB_DIR / "index.html")
+
+    # ----- вхід і облікові записи -----
+
+    @app.post("/api/auth/login")
+    async def login(req: LoginRequest):
+        if auth is None:
+            raise HTTPException(404, "вхід вимкнено")
+        try:
+            # bcrypt (cost 12) триває ~0,2 с – не в циклі подій, щоб не зупиняти відеопотік
+            token, user, exp = await run_in_threadpool(auth.login, req.email, req.password)
+        except AuthError as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
+        response = JSONResponse({"user": user.public(), "expires_at": utc_expiry(exp), "token": token})
+        # без «запам'ятати» cookie живе до закриття браузера, токен – не довше 24 год у будь-якому разі
+        response.set_cookie(TOKEN_COOKIE, token, max_age=auth.ttl_s if req.remember else None, path="/",
+                            httponly=True, samesite="strict", secure=secure_cookies)
+        return response
+
+    @app.post("/api/auth/logout")
+    def logout(request: Request):
+        if auth is not None:
+            auth.logout(request_token(request.headers, request.cookies))
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(TOKEN_COOKIE, path="/", httponly=True, samesite="strict", secure=secure_cookies)
+        return response
+
+    @app.get("/api/auth/me")
+    def me(request: Request):
+        user: User | None = request.state.user
+        return {"auth": auth is not None, "user": user.public() if user else None}
+
+    @app.get("/api/users")
+    def get_users():
+        return [u.public() for u in auth.store.list()] if auth else []
+
+    @app.post("/api/users")
+    async def post_user(req: UserCreateRequest, request: Request):
+        if auth is None:
+            raise HTTPException(404, "облікові записи вимкнено")
+        try:
+            user = await run_in_threadpool(auth.store.create, req.email, req.password, req.role)
+        except AuthError as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
+        audit(request, "user.create", user.email, {"role": user.role})
+        return user.public()
+
+    @app.patch("/api/users/{email}")
+    async def patch_user(email: str, req: UserUpdateRequest, request: Request):
+        if auth is None:
+            raise HTTPException(404, "облікові записи вимкнено")
+        try:
+            user, changes = await run_in_threadpool(auth.store.update, email, req.role, req.active, req.password)
+        except AuthError as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
+        if changes:
+            audit(request, "user.update", user.email, changes)
+        return user.public()
+
+    @app.get("/api/audit")
+    def get_audit():
+        return auth.audit_tail() if auth else []
+
+    # ----- модуль виявлення атак і база осіб -----
 
     @app.get("/api/config")
     def get_config():
@@ -1246,10 +1390,15 @@ def create_app(service: PadService, allowed_hosts: set[str] | None = None) -> Fa
             raise HTTPException(413, "фото більше 10 МБ")
         if request.headers.get("content-type", "").split(";")[0].strip() not in IMAGE_TYPES:
             raise HTTPException(415, "очікується зображення JPEG або PNG")
-        return await run_in_threadpool(service.enroll_image, person_id, body)
+        result = await run_in_threadpool(service.enroll_image, person_id, body)
+        audit(request, "person.add", result["person_id"], {"source": "photo", "stored": result["stored"]})
+        return result
 
     @app.post("/api/sessions")
-    def post_session(req: SessionRequest):
+    def post_session(req: SessionRequest, request: Request):
+        user: User | None = request.state.user
+        if req.mode == "record" and user is not None and user.role != "admin":
+            raise HTTPException(403, "запис набору даних доступний лише адміністратору")
         return service.create_session(req)
 
     @app.get("/api/sessions/{session_id}")
@@ -1266,8 +1415,10 @@ def create_app(service: PadService, allowed_hosts: set[str] | None = None) -> Fa
         return service.recordings()
 
     @app.post("/api/recordings/{name}/review")
-    def review_recording(name: str, req: ReviewRequest):
-        return service.review(name, req)
+    def review_recording(name: str, req: ReviewRequest, request: Request):
+        result = service.review(name, req)
+        audit(request, "recording.review", name, {"reviewed": req.reviewed})
+        return result
 
     @app.get("/api/stats")
     def get_stats():
@@ -1285,8 +1436,10 @@ def create_app(service: PadService, allowed_hosts: set[str] | None = None) -> Fa
             return service.persons()
 
     @app.delete("/api/persons/{person_id}")
-    def delete_person(person_id: str):
-        return service.delete_person(person_id)
+    def delete_person(person_id: str, request: Request):
+        result = service.delete_person(person_id)
+        audit(request, "person.delete", result["person_id"], {"deleted_files": result["deleted_files"]})
+        return result
 
     @app.get("/api/dashboard")
     def get_dashboard():
@@ -1299,8 +1452,15 @@ def create_app(service: PadService, allowed_hosts: set[str] | None = None) -> Fa
             return service.settings_view()
 
     @app.put("/api/settings")
-    def put_settings(req: SettingsRequest):
-        return service.update_settings(req)
+    def put_settings(req: SettingsRequest, request: Request):
+        with service.lock:
+            before = {"recognition_threshold": service.gallery.threshold,
+                      "pad_threshold": service.manager.settings.threshold}
+        result = service.update_settings(req)
+        changes = {k: [v, result[k]] for k, v in before.items() if result[k] != v}
+        if changes:
+            audit(request, "settings.update", "thresholds", changes)
+        return result
 
     @app.get("/api/incidents")
     def get_incidents():
@@ -1328,6 +1488,17 @@ def create_app(service: PadService, allowed_hosts: set[str] | None = None) -> Fa
             log.warning("відхилено WebSocket з іншого сайту: %s", ws.headers.get("origin"))
             await ws.close(code=1008)
             return
+        user: User | None = None
+        token = request_token(ws.headers, ws.cookies)
+        if auth is not None:
+            try:
+                user, _ = auth.decode(token)
+            except AuthError:
+                # з'єднання приймається і одразу закривається з кодом 4401: браузер бачить код
+                # (відмова до accept дає лише 1006) і показує форму входу замість повторних спроб
+                await ws.accept()
+                await ws.close(code=4401)
+                return
         await ws.accept()
         conn = StreamConnection()
         try:
@@ -1335,6 +1506,13 @@ def create_app(service: PadService, allowed_hosts: set[str] | None = None) -> Fa
                 msg = await ws.receive()
                 if msg["type"] == "websocket.disconnect":
                     break
+                if auth is not None:
+                    # вихід, блокування облікового запису і кінець строку токена діють і на відкритий потік
+                    try:
+                        user, _ = auth.decode(token)
+                    except AuthError:
+                        await ws.close(code=4401)
+                        break
                 if msg.get("bytes") is not None:
                     data = msg["bytes"]
                     if len(data) > MAX_WS_MESSAGE:
@@ -1344,12 +1522,20 @@ def create_app(service: PadService, allowed_hosts: set[str] | None = None) -> Fa
                     else:
                         (t,) = struct.unpack_from("<d", data)
                         reply = await run_in_threadpool(service.process_frame, conn, t, data[8:])
+                        enrolled = reply.get("enroll") if isinstance(reply, dict) else None
+                        if auth is not None and enrolled and enrolled.get("ok"):
+                            auth.audit(user, "person.add", enrolled["person_id"],
+                                       {"source": "camera", "stored": enrolled.get("stored")})
                 elif msg.get("text") is not None:
                     try:
                         cmd = json.loads(msg["text"]) if len(msg["text"]) <= MAX_WS_MESSAGE else {}
                     except json.JSONDecodeError:
                         cmd = {}
-                    reply = await run_in_threadpool(service.command, conn, cmd if isinstance(cmd, dict) else {})
+                    cmd = cmd if isinstance(cmd, dict) else {}
+                    if user is not None and user.role != "admin" and cmd.get("cmd") == "enroll":
+                        reply = {"type": "error", "message": "реєстрація еталона доступна лише адміністратору"}
+                    else:
+                        reply = await run_in_threadpool(service.command, conn, cmd)
                 else:
                     continue
                 await ws.send_text(json.dumps(reply, ensure_ascii=False, allow_nan=False))

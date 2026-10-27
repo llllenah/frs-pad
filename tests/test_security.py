@@ -90,3 +90,9 @@ def test_path_traversal_in_review_and_persons(tmp_path):
     for uid in ("..", "..%2F..%2Fenrolled", "P01%5C..%5C..", "a" * 200):
         assert client.get(f"/api/review/{uid}").status_code in (404, 409, 422)
     assert client.delete("/api/persons/..%2FP01").status_code in (404, 422)
+
+
+def test_local_hosts_in_container_and_extra_names():
+    assert local_hosts("0.0.0.0", 8000) == {"127.0.0.1:8000", "localhost:8000", "[::1]:8000"}
+    hosts = local_hosts("0.0.0.0", 8443, ["frs.lan", "Gate.local:443", " "])
+    assert {"frs.lan:8443", "gate.local:443", "localhost:8443"} <= hosts

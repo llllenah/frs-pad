@@ -1,0 +1,14 @@
+# Розгортання однією командою:  cp .env.example .env  (заповнити)  &&  docker compose up -d
+# Інтерфейс: http://localhost:8000 (вебкамера в браузері дозволена для localhost без HTTPS).
+services:
+  frs-pad:
+    build: .
+    image: frs-pad:0.2.0
+    container_name: frs-pad
+    env_file: .env
+    ports:
+      - "127.0.0.1:8000:8000"   # лише цей комп'ютер; для мережі – TLS (PAD_SSL_*) і PAD_ALLOWED_HOSTS
+    volumes:
+      - ./data:/app/data        # облікові записи, журнал аудиту, зашифровані еталони і записи
+      - ./logs:/logs            # системний журнал JSON, щодобова ротація, 30 днів
+    restart: unless-stopped

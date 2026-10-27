@@ -8,7 +8,11 @@
 працює приблизно за 15 мс, тоді як квантована SFace INT8 – за 90–130 мс (її
 оператори погано оптимізуються в ONNX Runtime), тому INT8 – лише за --int8.
 
-Запуск: python scripts/download_models.py [--int8]
+Готові ONNX-файли MTCNN і MobileFaceNet INT8 (результат export_models.py) і
+класифікатор pad_logistic.json опубліковано у випуску репозиторію; --prebuilt
+завантажує їх без PyTorch (так моделі отримує і Docker-образ).
+
+Запуск: python scripts/download_models.py [--int8] [--prebuilt]
 """
 
 from __future__ import annotations
@@ -34,6 +38,15 @@ MODELS = {
         "face_recognition_sface/face_recognition_sface_2021dec.onnx",
         "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79"),
 }
+# випуск репозиторію з моделями, підготовленими export_models.py, і навченим класифікатором
+RELEASE = "https://github.com/llllenah/frs-pad/releases/download/models-v1/"
+PREBUILT = {
+    "mtcnn_pnet.onnx": "e13e0a8cb99d4604920c2522896551e5ee0933abe379c8a3d06013ecccf94a68",
+    "mtcnn_rnet.onnx": "2d50ac323b9d995d78d4307bb49c7f9a689e7eb453f25b61b86800672e9977c9",
+    "mtcnn_onet.onnx": "5b8483f65b8cc393bd979e11bf29127184700735a5d8d8a5acb05dd879ce0674",
+    "mobilefacenet_int8.onnx": "77cf0b8b40d2ee1f8ac2e156aa15ffc260d035586171a6f967b6534efebe6645",
+    "pad_logistic.json": "c0ed4704bd2279adaaf496de295c91978db8bbc07758a88ad434b893e505ada2",
+}
 
 
 def sha256(path: Path) -> str:
@@ -49,18 +62,22 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", default=str(Path(__file__).resolve().parents[1] / "models"))
     ap.add_argument("--int8", action="store_true", help="також завантажити SFace INT8 (9,9 МБ)")
+    ap.add_argument("--prebuilt", action="store_true",
+                    help="MTCNN, MobileFaceNet INT8 і класифікатор з випуску репозиторію (без PyTorch)")
     args = ap.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     names = [n for n in MODELS if args.int8 or not n.endswith("_int8.onnx")]
+    sources = {n: (BASE + MODELS[n][0], MODELS[n][1]) for n in names}
+    if args.prebuilt:
+        sources.update({n: (RELEASE + n, digest) for n, digest in PREBUILT.items()})
     ok = True
-    for name in names:
-        rel, digest = MODELS[name]
+    for name, (url, digest) in sources.items():
         dst = out / name
         if not dst.exists():
             print(f"завантаження {name} ...")
             tmp = dst.with_suffix(".part")
-            urllib.request.urlretrieve(BASE + rel, tmp)
+            urllib.request.urlretrieve(url, tmp)
             tmp.replace(dst)
         actual = sha256(dst)
         if digest and actual != digest:

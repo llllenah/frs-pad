@@ -20,3 +20,5 @@ runs/pilot_*/*
 !runs/pilot_*/config.yaml
 !runs/pilot_*/cfg_*.yaml
 !runs/pilot_report/summary.json
+.env
+logs/

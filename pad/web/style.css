@@ -89,7 +89,7 @@ a.btn { display: inline-block; text-decoration: none; color: inherit; }
 .kv dd { margin: 0; font-family: var(--mono); font-weight: 600; text-align: right; white-space: nowrap; }
 .note { font-size: 12.5px; color: var(--muted); margin-top: auto; padding-top: 16px; }
 
-input[type=text], input:not([type]), select {
+input[type=text], input[type=email], input[type=password], input:not([type]), select {
   width: 100%; height: 44px; border: 1px solid #d4d4d4; border-radius: 8px; padding: 0 12px; background: #fff;
 }
 input:focus, select:focus { outline: 2px solid #000; outline-offset: -1px; }
@@ -444,13 +444,68 @@ details summary:hover { color: var(--text); }
 .dialog.small { width: min(460px, 100%); }
 .dialog-text { padding: 16px 18px; font-size: 15px; line-height: 1.45; }
 
+/* ----- вхід до системи і ролі ----- */
+
+body.signed-out .topbar, body.signed-out .view, body.signed-out .popups { display: none !important; }
+body:not(.signed-out) .login-page, body.loading .login-page { display: none; }
+body.role-operator .admin-only { display: none !important; }
+body:not(.role-operator) .operator-only { display: none !important; }
+body.role-operator #view-persons .grid2 { grid-template-columns: minmax(0, 1fr); }
+
+.login-page { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; }
+.login-card {
+  width: min(420px, 100%); background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+  padding: 30px 30px 24px; display: grid; gap: 14px; box-shadow: 0 12px 40px rgba(0,0,0,.08);
+}
+.login-card .brand.dark { color: var(--ink); font-size: 19px; }
+.login-card .brand.dark .logo { background: var(--ink); }
+.login-card .brand.dark .logo::before { border-color: #fff; }
+.login-card .brand.dark .logo::after { background: #fff; }
+.login-card h1 { margin: 6px 0 0; font-size: 25px; }
+.login-card > p.muted { margin: -8px 0 4px; }
+.login-card label.f, .dialog .form label.f, #u-form label.f {
+  display: flex; flex-direction: column; gap: 6px;
+  font-size: 12.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+}
+.login-card label.f > input { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--text); font-size: 15px; }
+.remember { display: flex; align-items: center; gap: 9px; cursor: pointer; font-size: 14.5px; }
+.login-card .btn.big { width: 100%; margin-top: 4px; }
+.login-error {
+  margin: 0; padding: 9px 12px; border-radius: 8px; border: 1.5px solid var(--red); color: var(--red);
+  background: #fef2f2; font-size: 14px;
+}
+.hint.small { font-size: 13px; color: var(--muted); }
+
+.account { display: flex; align-items: center; gap: 12px; flex: none; }
+.account .who { display: grid; text-align: right; line-height: 1.2; max-width: 220px; }
+.account .who b { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account .who small { font-size: 12.5px; color: #a8a8a8; }
+#u-form { display: grid; gap: 14px; align-content: start; }
+#u-form h2 { margin-bottom: 2px; }
+#u-form .add-row { margin: 0; }
+.table td .role { height: 32px; width: auto; padding: 0 6px; font-size: 14px; }
+.state-off { color: var(--red); font-weight: 600; }
+#a-table tr:not(.empty) td:last-child { white-space: normal; font-size: 13.5px; }
+@media (min-width: 1181px) { #view-users .grid2 { grid-template-columns: minmax(0, 1.9fr) minmax(0, 1fr); } }
+.dialog .form { display: grid; gap: 12px; }
+
 /* ----- вузькі екрани ----- */
 
-@media (max-width: 1180px) {
-  .topbar { gap: 20px; padding: 0 16px; }
-  .brand span.name { display: none; }
-  .topbar nav { gap: 4px; }
+/* сім вкладок, звук, стан з'єднання і обліковий запис уміщаються в рядок на 1280–1700 px */
+@media (max-width: 1700px) {
+  .topbar { gap: 22px; padding: 0 18px; }
+  .topbar nav { gap: 2px; }
   .topbar nav a { padding: 8px 12px; font-size: 15.5px; }
+}
+@media (max-width: 1400px) {
+  .topbar .brand span.name { display: none; }
+}
+
+@media (max-width: 1180px) {
+  .topbar { gap: 12px; padding: 0 14px; }
+  .topbar .brand span.name, .account .who, .live { display: none; }
+  .topbar nav { gap: 2px; }
+  .topbar nav a { padding: 8px 10px; font-size: 15px; }
   .verify, .monitor, .review { grid-template-columns: 240px minmax(0, 1fr); }
   .verify .right, .monitor .right, .review .right { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); }
   .view { height: auto; }
@@ -460,7 +515,7 @@ details summary:hover { color: var(--text); }
 }
 @media (max-width: 760px) {
   .topbar { gap: 14px; padding: 0 16px; }
-  .brand span.name, .live, .avatar { display: none; }
+  .topbar .brand span.name, .live, .avatar, .account .who { display: none; }
   .verify, .monitor, .record, .review { grid-template-columns: 1fr; }
   .sound { display: none; }
   .dialog-body { grid-template-columns: 1fr; }

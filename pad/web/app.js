@@ -11,6 +11,7 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const fmt = (x, d = 2) => (x == null || !Number.isFinite(x)) ? '–' : x.toFixed(d).replace('.', ',');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const lowerFirst = s => s ? s[0].toLowerCase() + s.slice(1) : s;
+const upperFirst = s => s ? s[0].toUpperCase() + s.slice(1) : s;
 
 const FINAL = new Set(['bona_fide', 'attack', 'failed', 'cancelled']);
 const isActive = s => s && !FINAL.has(s.state);
@@ -272,10 +273,76 @@ async function api(path, opts = {}) {
     const d = data && data.detail;
     // помилки перевірки FastAPI (422) приходять англійською: показується лише назва поля
     const field = x => (x.loc && x.loc.length ? `некоректне значення поля «${x.loc[x.loc.length - 1]}»` : 'некоректні дані');
-    throw new Error(typeof d === 'string' ? d : Array.isArray(d) ? d.map(field).join('; ') : `помилка сервера (код ${r.status})`);
+    const err = new Error(typeof d === 'string' ? d : Array.isArray(d) ? d.map(field).join('; ') : `помилка сервера (код ${r.status})`);
+    err.status = r.status;
+    // строк токена минув, сесію завершено або обліковий запис заблоковано – знову форма входу
+    if (r.status === 401 && !path.startsWith('/api/auth/') && App.user) Auth.showLogin(err.message);
+    throw err;
   }
   return data;
 }
+
+// ----- вхід до системи (рисунок 4.1) -----
+
+const ROLE_TEXT = { admin: 'адміністратор', operator: 'оператор' };
+const isAdmin = () => !Auth.enabled || (App.user && App.user.role === 'admin');
+
+const Auth = {
+  enabled: true,
+
+  apply(user) {
+    App.user = user;
+    document.body.classList.remove('loading');
+    const out = this.enabled && !user;
+    document.body.classList.toggle('signed-out', out);
+    document.body.classList.toggle('role-operator', !isAdmin());
+    $('#account').hidden = !user;
+    if (user) {
+      $('#me-email').textContent = user.email;
+      $('#me-role').textContent = user.role_text || ROLE_TEXT[user.role];
+    }
+  },
+  showLogin(message = '') {
+    if (Cam.active) { Cam.stop(); cameraChanged(); }
+    this.apply(null);
+    const box = $('#l-error');
+    box.textContent = upperFirst(message);
+    box.hidden = !message;
+    $('#l-password').value = '';
+    ($('#l-email').value ? $('#l-password') : $('#l-email')).focus();
+  },
+  async submit(ev) {
+    ev.preventDefault();
+    const email = $('#l-email').value.trim(), password = $('#l-password').value;
+    const box = $('#l-error');
+    if (!email || !password) {
+      box.textContent = 'Вкажіть електронну пошту і пароль';
+      box.hidden = false;
+      return;
+    }
+    $('#l-submit').disabled = true;
+    try {
+      const r = await api('/api/auth/login', { json: { email, password, remember: $('#l-remember').checked } });
+      box.hidden = true;
+      $('#l-password').value = '';
+      this.apply(r.user);
+      if (!App.started) await start();
+      else { route(); if (!Stream.open) Stream.connect(); }
+    } catch (e) {
+      box.textContent = upperFirst(e.message);
+      box.hidden = false;
+      $('#l-password').select();
+    } finally {
+      $('#l-submit').disabled = false;
+    }
+  },
+  async logout() {
+    try { await api('/api/auth/logout', { method: 'POST' }); } catch (_) { /* cookie однаково видаляється з вкладки */ }
+    // нова сторінка без стану попереднього користувача: журнал, сеанси, кадри
+    location.hash = '';
+    location.reload();
+  },
+};
 
 function toast(msg, kind = '') {
   const el = $('#toast');
@@ -404,13 +471,18 @@ const Stream = {
       if (App.view === 'monitor') this.send({ cmd: 'monitor', on: true });
       schedule();
     };
-    ws.onclose = () => {
+    ws.onclose = ev => {
       this.open = false;
       this.inflight = false;
       setLive();
+      // 4401 – потрібно увійти знову; з'єднання відновлюється після входу
+      if (ev.code === 4401) {
+        if (App.user) Auth.showLogin('Сесія завершилася: увійдіть знову');
+        return;
+      }
       // сервер перериває сеанс, якщо з'єднання закрито
       if (isActive(App.session)) refreshSession();
-      setTimeout(() => this.connect(), 1500);
+      setTimeout(() => { if (App.user || !Auth.enabled) this.connect(); }, 1500);
     };
     ws.onmessage = ev => onMessage(JSON.parse(ev.data));
     this.ws = ws;
@@ -1581,8 +1653,9 @@ function renderPersonsTable() {
       <td class="mono"><b>${esc(p.id)}</b></td><td>${esc(STORED_SHORT[p.stored] || p.stored)}</td>
       <td class="mono">${esc(fmtDateTime(p.registered))}</td>
       <td class="acts"><button class="btn sm" data-p-check="${esc(p.id)}" title="Сеанс перевірки викликами для ${esc(p.id)}">Перевірити</button>
-        <button class="btn sm" data-p-del="${esc(p.id)}">Видалити</button></td></tr>`).join('')
-    : `<tr class="empty"><td colspan="4">${d.persons.length ? 'нічого не знайдено' : 'база порожня – додайте особу з фото або з камери'}</td></tr>`;
+        ${isAdmin() ? `<button class="btn sm" data-p-del="${esc(p.id)}">Видалити</button>` : ''}</td></tr>`).join('')
+    : `<tr class="empty"><td colspan="4">${d.persons.length ? 'нічого не знайдено'
+      : isAdmin() ? 'база порожня – додайте особу з фото або з камери' : 'база порожня – осіб додає адміністратор'}</td></tr>`;
 }
 
 async function deletePerson(pid) {
@@ -1649,6 +1722,7 @@ async function refreshSettings() {
 function showSettings(s) {
   $('#s-rec').value = s.recognition_threshold.toFixed(2);
   $('#s-pad').value = s.pad_threshold.toFixed(2);
+  $('#s-rec').readOnly = $('#s-pad').readOnly = !isAdmin();
   $('#s-config').textContent = `У конфігурації: розпізнавання ${fmt(s.config.recognition_threshold)}, атака ${fmt(s.config.pad_threshold)}.`;
   const kv = rows => rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
   const file = s.classifier_file ? s.classifier_file.split(/[\\/]/).slice(-2).join('/') : 'немає (базовий поріг s_ref)';
@@ -1664,8 +1738,75 @@ function showSettings(s) {
   ]);
   $('#s-data-info').innerHTML = kv([
     ['Шифрування', s.encryption.algorithm], ['Ключ PAD_DATASET_KEY', s.encryption.key_set ? 'задано' : 'не задано'],
-    ['Сервер', '127.0.0.1 (лише цей комп\'ютер)'],
+    ['Сервер', ['127.0.0.1', 'localhost', '[::1]'].includes(location.hostname) ? `${location.host} (лише цей комп'ютер)` : location.host],
+    ['З\'єднання', location.protocol === 'https:' ? 'HTTPS і WSS (TLS)' : 'HTTP (без TLS)'],
+    ['Вхід', Auth.enabled ? 'JWT, до 24 год, bcrypt' : 'вимкнено'],
   ]);
+}
+
+// ----- користувачі і журнал аудиту -----
+
+const ACTION_TEXT = {
+  'user.create': 'новий користувач', 'user.update': 'зміна користувача', 'person.add': 'додано особу',
+  'person.delete': 'видалено особу', 'settings.update': 'зміна порогів', 'recording.review': 'розмітка запису',
+};
+const CHANGE_TEXT = {
+  role: 'роль', active: 'активний', password: 'пароль', source: 'джерело', stored: 'зберігання',
+  deleted_files: 'файлів', reviewed: 'розмічено', recognition_threshold: 'поріг розпізнавання',
+  pad_threshold: 'поріг атаки', via: 'через',
+};
+const changeValue = v => typeof v === 'boolean' ? (v ? 'так' : 'ні') : ROLE_TEXT[v] || (typeof v === 'number' && !Number.isInteger(v) ? fmt(v) : String(v));
+const changesText = c => Object.entries(c || {}).map(([k, v]) =>
+  `${CHANGE_TEXT[k] || k}: ${Array.isArray(v) ? `${changeValue(v[0])} → ${changeValue(v[1])}` : changeValue(v)}`).join('; ') || '–';
+
+async function refreshUsers() {
+  let users, audit;
+  try { [users, audit] = await Promise.all([api('/api/users'), api('/api/audit')]); } catch (e) { toast(e.message, 'err'); return; }
+  if (App.view !== 'users') return;
+  const me = App.user && App.user.email;
+  $('#u-table tbody').innerHTML = users.map(u => `<tr data-email="${esc(u.email)}">
+      <td><b>${esc(u.email)}</b>${u.email === me ? ' <span class="tag">ви</span>' : ''}</td>
+      <td><select class="role" data-u-role aria-label="Роль ${esc(u.email)}">${Object.entries(ROLE_TEXT).map(([r, t]) =>
+        `<option value="${r}"${u.role === r ? ' selected' : ''}>${t}</option>`).join('')}</select></td>
+      <td>${u.active ? 'активний' : '<span class="state-off">заблоковано</span>'}</td>
+      <td class="mono">${esc(fmtDateTime(u.created))}</td>
+      <td class="acts"><button class="btn sm" data-u-pw>Пароль</button><button class="btn sm" data-u-active="${u.active ? 0 : 1}">${u.active ? 'Заблокувати' : 'Розблокувати'}</button></td>
+    </tr>`).join('') || '<tr class="empty"><td colspan="5">облікових записів немає</td></tr>';
+  $('#a-table tbody').innerHTML = audit.map(a => `<tr>
+      <td class="mono">${esc(fmtDateTime(a.time))}</td><td>${esc(a.user || 'командний рядок')}</td>
+      <td>${esc(ACTION_TEXT[a.action] || a.action)}</td><td class="mono">${esc(a.target)}</td><td>${esc(changesText(a.changes))}</td>
+    </tr>`).join('') || '<tr class="empty"><td colspan="5">змін ще не було</td></tr>';
+}
+
+async function updateUser(email, body, done) {
+  try {
+    await api(`/api/users/${encodeURIComponent(email)}`, { method: 'PATCH', json: body });
+    toast(done);
+  } catch (e) { toast(e.message, 'err'); }
+  refreshUsers();
+}
+
+async function createUser(ev) {
+  ev.preventDefault();
+  const body = { email: $('#u-email').value.trim(), password: $('#u-password').value, role: $('#u-role').value };
+  try {
+    const u = await api('/api/users', { json: body });
+    toast(`Створено ${u.email} (${u.role_text})`);
+    $('#u-form').reset();
+  } catch (e) { toast(e.message, 'err'); }
+  refreshUsers();
+}
+
+function askPassword(email) {
+  $('#pw-title').textContent = `Новий пароль: ${email}`;
+  $('#pw-input').value = '';
+  $('#pw-modal').hidden = false;
+  $('#pw-input').focus();
+  $('#pw-form').onsubmit = ev => {
+    ev.preventDefault();
+    $('#pw-modal').hidden = true;
+    updateUser(email, { password: $('#pw-input').value }, `Пароль ${email} змінено`);
+  };
 }
 
 async function applySettings(reset) {
@@ -1695,20 +1836,24 @@ function render() {
 
 const VIEWS = {
   '#/record': 'record', '#/monitor': 'monitor', '#/dashboard': 'dashboard', '#/persons': 'persons',
-  '#/settings': 'settings',
+  '#/settings': 'settings', '#/users': 'users',
 };
-const ALL_VIEWS = ['verify', 'monitor', 'record', 'review', 'dashboard', 'persons', 'settings'];
+const ALL_VIEWS = ['verify', 'monitor', 'record', 'review', 'dashboard', 'persons', 'settings', 'users'];
+const ADMIN_VIEWS = new Set(['record', 'users']);
 
 function route() {
   const prev = App.view;
   const rv = location.hash.match(/^#\/review\/([^/]+)$/);
   App.view = rv ? 'review' : VIEWS[location.hash] || 'verify';
+  // оператор, що відкрив адресу вкладки адміністратора, потрапляє на верифікацію
+  if (ADMIN_VIEWS.has(App.view) && !isAdmin()) App.view = 'verify';
   for (const v of ALL_VIEWS) $(`#view-${v}`).hidden = App.view !== v;
   // на вузькому екрані сторінка прокручується цілком: нова вкладка відкривається з початку
   if (prev !== App.view) window.scrollTo(0, 0);
   if (App.view === 'dashboard') refreshDashboard();
   if (App.view === 'persons') refreshPersons();
   if (App.view === 'settings') refreshSettings();
+  if (App.view === 'users') refreshUsers();
   // перегляд сеансу підсвічує вкладку, з якої його відкрито
   const tab = App.view === 'review' ? VIEWS[App.lastHash] || 'verify' : App.view;
   $$('.topbar nav a[data-view]').forEach(a => a.classList.toggle('active', a.dataset.view === tab));
@@ -1796,6 +1941,29 @@ function bind() {
   $('#s-apply').addEventListener('click', () => applySettings(false));
   $('#s-reset').addEventListener('click', () => applySettings(true));
 
+  // користувачі
+  $('#logout').addEventListener('click', () => Auth.logout());
+  $('#u-form').addEventListener('submit', createUser);
+  $('#u-table').addEventListener('change', e => {
+    const sel = e.target.closest('[data-u-role]');
+    if (!sel) return;
+    const email = sel.closest('tr').dataset.email;
+    updateUser(email, { role: sel.value }, `${email}: роль – ${ROLE_TEXT[sel.value]}`);
+  });
+  $('#u-table').addEventListener('click', async e => {
+    const row = e.target.closest('tr[data-email]');
+    if (!row) return;
+    const email = row.dataset.email;
+    if (e.target.closest('[data-u-pw]')) askPassword(email);
+    const act = e.target.closest('[data-u-active]');
+    if (!act) return;
+    const active = act.dataset.uActive === '1';
+    if (!active && !await confirmDialog(`Заблокувати ${email}?`,
+      'Користувач не зможе увійти, його відкриті сесії завершаться одразу. Розблокувати можна тут же.', 'Заблокувати')) return;
+    updateUser(email, { active }, active ? `${email} розблоковано` : `${email} заблоковано`);
+  });
+  $('#pw-cancel').addEventListener('click', () => { $('#pw-modal').hidden = true; });
+
   // сповіщення і журнал інцидентів
   $('#sound').addEventListener('click', () => Sound.toggle());
   $('#m-only-alarms').addEventListener('change', renderIncidents);
@@ -1834,6 +2002,7 @@ function bind() {
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && !$('#incident').hidden) closeIncident();
     if (e.key === 'Escape' && !$('#confirm').hidden) $('#cf-no').click();
+    if (e.key === 'Escape' && !$('#pw-modal').hidden) $('#pw-modal').hidden = true;
     if (App.view !== 'review' || e.target.closest('input, button, select, textarea')) return;
     if (e.key === ' ') { e.preventDefault(); Review.toggle(); }
     if (e.key === 'ArrowRight') Review.seek(Review.tau + 0.5);
@@ -1846,9 +2015,26 @@ function bind() {
 
 async function init() {
   Cam.init();
+  $('#login-form').addEventListener('submit', e => Auth.submit(e));
+  let me;
+  try {
+    me = await api('/api/auth/me');
+  } catch (e) {
+    Auth.showLogin(e.status === 401 ? '' : `Сервер недоступний: ${e.message}`);
+    return;
+  }
+  Auth.enabled = me.auth;
+  Auth.apply(me.user);
+  await start();
+}
+
+// Інтерфейс після входу: конфігурація модуля, форми, журнал, потік кадрів.
+async function start() {
+  App.started = true;
   try {
     App.config = await api('/api/config');
   } catch (e) {
+    App.started = false;
     toast(`Сервер недоступний: ${e.message}`, 'err');
     return;
   }
