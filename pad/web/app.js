@@ -1755,7 +1755,9 @@ const CHANGE_TEXT = {
   deleted_files: 'файлів', reviewed: 'розмічено', recognition_threshold: 'поріг розпізнавання',
   pad_threshold: 'поріг атаки', via: 'через',
 };
-const changeValue = v => typeof v === 'boolean' ? (v ? 'так' : 'ні') : ROLE_TEXT[v] || (typeof v === 'number' && !Number.isInteger(v) ? fmt(v) : String(v));
+const VALUE_TEXT = { photo: 'фото', camera: 'камера', memory: 'лише в пам’яті', encrypted: 'зашифровано', cli: 'командний рядок', thresholds: 'пороги' };
+const changeValue = v => typeof v === 'boolean' ? (v ? 'так' : 'ні')
+  : ROLE_TEXT[v] || VALUE_TEXT[v] || (typeof v === 'number' && !Number.isInteger(v) ? fmt(v) : String(v));
 const changesText = c => Object.entries(c || {}).map(([k, v]) =>
   `${CHANGE_TEXT[k] || k}: ${Array.isArray(v) ? `${changeValue(v[0])} → ${changeValue(v[1])}` : changeValue(v)}`).join('; ') || '–';
 
@@ -1767,7 +1769,7 @@ async function refreshUsers() {
   renderUsersTable();
   $('#a-table tbody').innerHTML = audit.map(a => `<tr>
       <td class="mono">${esc(fmtDateTime(a.time))}</td><td>${esc(a.user || 'командний рядок')}</td>
-      <td>${esc(ACTION_TEXT[a.action] || a.action)}</td><td class="mono">${esc(a.target)}</td><td>${esc(changesText(a.changes))}</td>
+      <td>${esc(ACTION_TEXT[a.action] || a.action)}</td><td class="mono">${esc(VALUE_TEXT[a.target] || a.target)}</td><td>${esc(changesText(a.changes))}</td>
     </tr>`).join('') || '<tr class="empty"><td colspan="5">змін ще не було</td></tr>';
 }
 
@@ -1781,7 +1783,7 @@ function renderUsersTable() {
       <td><select class="role" data-u-role aria-label="Роль ${esc(u.email)}">${Object.entries(ROLE_TEXT).map(([r, t]) =>
         `<option value="${r}"${u.role === r ? ' selected' : ''}>${t}</option>`).join('')}</select></td>
       <td>${u.active ? 'активний' : '<span class="state-off">заблоковано</span>'}</td>
-      <td class="mono">${esc(fmtDateTime(u.created))}</td>
+      <td class="mono">${esc(fmtDateTime(u.created).slice(0, 10))}</td>
       <td class="acts"><button class="btn sm" data-u-pw>Пароль</button>${u.email === me ? ''
         : `<button class="btn sm" data-u-active="${u.active ? 0 : 1}">${u.active ? 'Заблокувати' : 'Розблокувати'}</button>`}</td>
     </tr>`).join('') || `<tr class="empty"><td colspan="5">${q ? 'нічого не знайдено' : 'облікових записів немає'}</td></tr>`;

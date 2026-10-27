@@ -484,6 +484,9 @@ body.role-operator #view-persons .grid2 { grid-template-columns: minmax(0, 1fr);
 #u-form h2 { margin-bottom: 2px; }
 #u-form .add-row { margin: 0; }
 .table td .role { height: 32px; width: auto; padding: 0 6px; font-size: 14px; }
+/* довгі адреси переносяться, щоб кнопки рядка не виходили за картку */
+#u-table td:first-child { white-space: normal; overflow-wrap: anywhere; min-width: 150px; }
+#u-table td.acts { white-space: nowrap; }
 .state-off { color: var(--red); font-weight: 600; }
 #a-table tr:not(.empty) td:last-child { white-space: normal; font-size: 13.5px; }
 @media (min-width: 1181px) { #view-users .grid2 { grid-template-columns: minmax(0, 1.9fr) minmax(0, 1fr); } }
